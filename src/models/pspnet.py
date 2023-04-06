@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from torchvision.models import resnet50, resnet18
-from src.ppm import PPM
+from .ppm import PPM
 
 
 class PSPNet(nn.Module):

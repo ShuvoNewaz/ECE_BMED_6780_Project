@@ -42,6 +42,15 @@ def IOU(
 
     return area_intersection / area_union
 
+def BinaryACC(output, target):
+    prediction = (output > 0.5).int()
+    return torch.mean((prediction == target).float())
+def BinaryF1(output, target):
+    prediction = (output > 0.5).int()
+    recall = torch.mean((prediction[target == 1] == 1).float())
+    precision = torch.mean((1 == target[prediction == 1]).float())
+    return (2*precision*recall / (precision + recall)).nan_to_num(0)
+
 
 def ange_structure_loss(pred, mask, smooth=1):
     mask = mask.float()
