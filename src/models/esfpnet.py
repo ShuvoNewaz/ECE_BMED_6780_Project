@@ -2,8 +2,8 @@ import os
 import torch
 from torch import nn
 import torch.nn.functional as F
-from src import mit
-from src import mlp
+import models.mit as mit
+import models.mlp as mlp
 from mmcv.cnn import ConvModule
 
 

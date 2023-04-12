@@ -22,7 +22,10 @@ class UNet(nn.Module):
         self.up4 = (Up(128, 64, bilinear))
         self.outc = (OutConv(64, n_classes))
 
-        self.criterion = nn.CrossEntropyLoss()
+        if n_classes == 1:
+            self.criterion = nn.BCEWithLogitsLoss()
+        else:
+            self.criterion = nn.CrossEntropyLoss()
 
     def forward(self, x):
         x = x.float()
@@ -35,7 +38,7 @@ class UNet(nn.Module):
         x = self.up2(x, x3)
         x = self.up3(x, x2)
         x = self.up4(x, x1)
-        logits = self.outc(x)
+        logits = self.outc(x).squeeze(1)
         return logits
 
     def use_checkpointing(self):

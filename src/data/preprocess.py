@@ -9,39 +9,28 @@ from argparse import ArgumentParser
 
 resize = transforms.Compose([transforms.Resize([512, 512])])
 parser = ArgumentParser(description='Creates a collection of nifti images files from distributed sources')
-parser.add_argument('--read_directory', '-rd', type=str, required=True)
-parser.add_argument('--save_directory', '-sd', type=str, required=True)
-parser.add_argument('--data_type', '-dt', type=str, required=True)
+parser.add_argument('--read_directory', '-rd', type=str, required=True, help="string representing the directory to read the files")
+parser.add_argument('--save_directory', '-sd', type=str, required=True, help="directory+name with which the concatenated image/mask will be")
+parser.add_argument('--data_type', '-dt', type=str, choices=['image', 'mask'], required=True, help="whether image or mask is being transformed")
 args = parser.parse_args()
 
 read_dir = args.read_directory
 save_dir = args.save_directory
 data_type = args.data_type
 
-
-# def nifti_concat(read_dir: str, save_dir: str, data_type: str) -> torch.tensor:
-#     """
-#     From a directory containing several images, resize every image and return a new nifti
-#     image that is a concatenation of all images in that directory
-#     args:
-#         read_dir: string representing the directory to read the files
-#         from.
-#         save_dir: directory+name with which the concatenated image/mask will be
-#         saved.
-#         data_type: whether image or mask is being transformed.
-#     return:
-#         The concatenated image.
-#     """
 nii_list = []
 for im_dir in os.listdir(read_dir):
     name_split = im_dir.split('.')
     if name_split[len(name_split) - 1] == 'gz':
         nii_list.append(os.path.join(read_dir, im_dir))
+nii_list.sort()
 for count, im_dir in enumerate(nii_list):
+    print(f"Loading {im_dir}")
     if data_type == 'image':
         nifti_image = tio.ScalarImage(im_dir)   # Read the *.nii image
     elif data_type == 'mask':
         nifti_image = tio.LabelMap(im_dir)   # Read the *.nii mask
+    else: raise NotImplementedError
     torch_image = nifti_image.data          # Extract the tensor data
     torch_image = torch.squeeze(torch_image, dim=0)
     torch_image = torch.swapaxes(torch_image, 0, 2)

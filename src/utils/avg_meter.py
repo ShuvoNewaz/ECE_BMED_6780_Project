@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from typing import List
-from src.metrics import Intersection_Union
+from .metrics import Intersection_Union
 
 
 class AverageMeter():

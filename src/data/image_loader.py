@@ -4,7 +4,7 @@ from torchvision.transforms import Compose
 from torch.utils import data
 import nibabel as nib
 import numpy as np
-
+from typing import List, Tuple
 
 class ImageLoader(data.Dataset):
     def __init__(self, im_file: str, msk_file: str, transform: Compose=None) -> None:
@@ -24,7 +24,7 @@ class ImageLoader(data.Dataset):
         self.transform = transform
         self.dataset = self.load_images_with_masks()
 
-    def load_images_with_masks(self) -> list[tuple[np.ndarray, np.ndarray]]:
+    def load_images_with_masks(self) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
         Returns the list of tuples containing the image and the mask
         of the dataset.
