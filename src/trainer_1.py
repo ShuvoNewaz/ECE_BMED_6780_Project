@@ -7,6 +7,7 @@ from src.metrics import *
 from src.avg_meter import AverageMeter, SegmentationAverageMeter
 from src.esfpnet import ESFPNetStructure
 from src.pspnet import *
+from src.unet_model import *
 from typing import List, Tuple
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, random_split
@@ -39,10 +40,14 @@ class Trainer:
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
         elif model_name == 'pspnet':
             self.model, self.optimizer = psp_model_optimizer(layers=50, num_classes=2)
+        elif model_name == 'unet':
+            self.model = UNet(1, 2)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
         self.model_name = model_name
         self.model = self.model.to(device)
         self.seg_type = seg_type
         dataloader_args = {"num_workers": 1, "pin_memory": True} if torch.cuda.is_available() else {}
+        dataloader_args = {}
 
         self.train_dataset = ImageLoader(
                                             im_file=train_im, msk_file=train_msk, transform=train_data_transforms
@@ -55,7 +60,7 @@ class Trainer:
                                         self.train_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
                                         )
         self.val_loader = DataLoader(
-                                        self.val_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
+                                        self.val_dataset, batch_size=batch_size, shuffle=False, **dataloader_args
                                     )
 
         # self.optimizer = optimizer
@@ -134,6 +139,10 @@ class Trainer:
                 logits, y_hat, aux_loss, main_loss = self.model(x, masks)
                 aux_weight = 0.4
                 batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
+            elif self.model_name == 'unet':
+                masks = masks.long()
+                logits = self.model(x)
+                batch_loss = self.model.criterion(logits, masks)
 
             train_loss_meter.update(val=float(batch_loss.cpu().item()), n=n)
 
@@ -165,6 +174,7 @@ class Trainer:
         self.original_images = []
         self.original_masks = []
         self.predictions = []
+        self.prob = []
         # loop over whole val set
         for (x, masks) in self.val_loader:
             x = x.to(device)
@@ -185,6 +195,12 @@ class Trainer:
                 logits, y_hat, aux_loss, main_loss = self.model(x, masks)
                 aux_weight = 0.4
                 batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
+            elif self.model_name == 'unet':
+                masks = masks.long()
+                logits = self.model(x)
+                prob = nn.Softmax(dim=1)(logits)
+                batch_loss = self.model.criterion(logits, masks)
+                y_hat = torch.argmax(logits, dim=1)
             
             val_loss_meter.update(val=float(batch_loss.cpu().item()), n=n)
 
@@ -197,6 +213,9 @@ class Trainer:
             if self.model_name == 'pspnet':
                 main_loss = main_loss.detach().cpu()
                 aux_loss = aux_loss.detach().cpu()
+            elif self.model_name == 'unet':
+                prob = prob.detach().cpu()
+                self.prob.append(prob)
             batch_loss = batch_loss.detach().cpu()
             torch.cuda.empty_cache()
 
