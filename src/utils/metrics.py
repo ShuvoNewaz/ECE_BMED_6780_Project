@@ -47,6 +47,7 @@ def BinaryACC(logits, target):
     prediction = (output > 0.5).int()
     return torch.mean((prediction == target).float())
 def BinaryF1(logits, target):
+    target = target.int()
     output = torch.sigmoid(logits)
     prediction = (output > 0.5).int()
     recall = torch.mean((prediction[target == 1] == 1).float())

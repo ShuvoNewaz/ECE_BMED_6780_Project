@@ -6,7 +6,7 @@ import torchvision.transforms as transforms
 from data.image_loader import ImageLoader
 from utils.metrics import ange_structure_loss, BinaryF1
 from utils.avg_meter import AverageMeter, SegmentationAverageMeter
-from models import ESFPNetStructure, PSPNet, UNet
+from models import ESFPNetStructure, PSPNet, UNet, EnsembleNet
 from transforms.data_transforms import get_train_transforms, get_val_transforms
 
 from typing import List, Tuple
@@ -39,6 +39,7 @@ class Trainer:
                     validation_im: str,
                     validation_msk: str,
                     test_im: str,
+                    test_msk: str = '',
                     batch_size: int=100,
                     load_from_disk: bool = True,
                     model_args: dict = dict(),
@@ -56,6 +57,9 @@ class Trainer:
         elif model_name == 'unet':
             self.model = UNet(**model_args)
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
+        elif model_name == 'ensemble':
+            self.model = EnsembleNet(**model_args)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
         else: raise NotImplementedError
         self.model_name = model_name
         self.model = self.model.to(device)
@@ -64,9 +68,9 @@ class Trainer:
 
         if predict:
             self.test_dataset = ImageLoader(
-                im_file=test_im, msk_file='', transform=val_data_transforms)
+                im_file=test_im, msk_file=test_msk, transform=val_data_transforms)
             self.test_loader = DataLoader(
-                                            self.test_dataset, batch_size=batch_size, shuffle=False, **dataloader_args
+                                            self.test_dataset, batch_size=1, shuffle=False, **dataloader_args
                                         )
         else:
             self.train_dataset = ImageLoader(
@@ -99,8 +103,12 @@ class Trainer:
             optimizer_state_dict = torch.load(os.path.join(self.model_dir, "optimizer.pt"))
             self.optimizer.load_state_dict(optimizer_state_dict)
         elif predict:
-            checkpoint = torch.load(os.path.join(self.model_dir, "best.pt"))
-            self.model.load_state_dict(checkpoint)
+            model_file = os.path.join(self.model_dir, "best.pt")
+            if os.path.isfile(model_file):
+                checkpoint = torch.load(os.path.join(self.model_dir, "best.pt"))
+                self.model.load_state_dict(checkpoint)
+            else:
+                self.logger.warning(f"{model_file} not found")
         self.model.train()
         self.original_images = [] # Store the original validation images
         self.original_masks = [] # Store the ground truth of validation set
@@ -144,6 +152,7 @@ class Trainer:
                 + f" Validation F1: {val_f1:.4f}"
             )
             if val_loss < self.best_loss:
+                self.best_loss = val_loss
                 self.best_state_dict = self.model.state_dict()
 
 
@@ -230,34 +239,46 @@ class Trainer:
     def predict(self) -> Tuple[np.ndarray, np.ndarray]:
         """Evaluate on held-out split (either val or test)"""
         self.model.eval()
-        original_images = []
-        predictions = []
-        # loop over whole val set
-        for x, _ in self.test_loader:
-            x = x.to(device)
-            n = x.shape[0]
+        with torch.no_grad():
+            self.model.eval()
+            original_images = []
+            predictions = []
+            # loop over whole val set
 
+            f1_meter = AverageMeter()
+            for x, masks in self.test_loader:
+                x = x.to(device)
+                n = x.shape[0]
 
-            if self.model_name in ['esfpnet', 'unet']:
-                prob = torch.sigmoid(self.model(x))
-            elif self.model_name == 'pspnet':
-                # TODO: fix this part
-                logits, y_hat, aux_loss, main_loss = self.model(x, masks)
-                aux_weight = 0.4
-                batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
-                prob = torch.sigmoid(logits)
-            else: raise NotImplementedError
-            
-            prediction = (prob > 0.5).int().cpu().numpy()
+                if self.model_name in ['esfpnet', 'unet', 'ensemble']:
+                    logits = self.model(x)
+                    prob = torch.sigmoid(logits)
+                elif self.model_name == 'pspnet':
+                    # TODO: fix this part
+                    logits, y_hat, aux_loss, main_loss = self.model(x, masks)
+                    aux_weight = 0.4
+                    batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
+                    prob = torch.sigmoid(logits)
+                else: raise NotImplementedError
 
-            x = x.squeeze(1).detach().cpu().numpy()
+                batch_f1 = BinaryF1(logits, masks)
+                f1_meter.update(val=float(batch_f1.cpu().item()), n=n)
 
-            # Store images for viewing
+                
+                prediction = (prob > 0.5).int().cpu().numpy()
 
-            original_images.append(x)
-            predictions.append(prediction)
+                x = x.squeeze(1).detach().cpu().numpy()
+
+                # Store images for viewing
+
+                original_images.append(x)
+                predictions.append(prediction)
         original_images = np.concatenate(original_images, axis=0)
         predictions = np.concatenate(predictions, axis=0)
+        if self.test_dataset.msk_file:
+            self.logger.info(f"F1 score {f1_meter.avg}")
+        else:
+            self.logger.warning("Test mask not found, skip evaluation")
         return original_images, predictions
 
     def plot_loss_history(self, ax) -> None:
@@ -309,6 +330,7 @@ if __name__ == "__main__":
                  train_msk=cfg.data.train.msk,
                  validation_im=cfg.data.val.im,
                  validation_msk=cfg.data.val.msk,
+                 test_msk=cfg.data.test.msk,
                  test_im=cfg.data.test.im,
                  batch_size=cfg.batch_size,
                  load_from_disk=cfg.load_from_disk,
