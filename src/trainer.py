@@ -3,11 +3,11 @@ import matplotlib.pyplot as plt
 import torch
 import torchvision.transforms as transforms
 
-from data.image_loader import ImageLoader
-from utils.metrics import ange_structure_loss, BinaryF1
-from utils.avg_meter import AverageMeter, SegmentationAverageMeter
-from models import ESFPNetStructure, PSPNet, UNet, EnsembleNet
-from transforms.data_transforms import get_train_transforms, get_val_transforms
+from src.data.image_loader import ImageLoader
+from src.utils.metrics import ange_structure_loss, BinaryF1
+from src.utils.avg_meter import AverageMeter, SegmentationAverageMeter
+from src.models import ESFPNetStructure, PSPNet, UNet, EnsembleNet
+from src.transforms.data_transforms import get_train_transforms, get_val_transforms
 
 from typing import List, Tuple
 from torch.optim import Optimizer
@@ -22,7 +22,7 @@ from mmcv.utils import Config, DictAction
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 import sys
-from utils.logger import get_logger
+from src.utils.logger import get_logger
 
 class Trainer:
     """Class that stores model training metadata."""
