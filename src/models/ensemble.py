@@ -28,3 +28,11 @@ class EnsembleNet(torch.nn.Module):
         if self.method == "average":
             return logits.mean(axis=1)
         else: raise NotImplementedError
+
+class single_Conv(torch.nn.Module):
+    def __init__(self, **model_args):
+        super().__init__()
+        self.conv = torch.nn.Conv2d(**model_args)
+        self.criterion = torch.nn.BCEWithLogitsLoss()
+    def forward(self, x):
+        return self.conv(x).squeeze(1)

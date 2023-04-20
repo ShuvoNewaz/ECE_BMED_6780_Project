@@ -11,7 +11,7 @@ pretrain_path = './Pretrained'
 
 class ESFPNetStructure(nn.Module):
 
-    def __init__(self, model_type: str, embedding_dim: int):
+    def __init__(self, model_type: str, embedding_dim: int, dropout=0):
         super().__init__()
         self.model_type = model_type
         # Backbone
@@ -52,6 +52,8 @@ class ESFPNetStructure(nn.Module):
         # Optimizer
         # backbone_params = {'params': }
         # self.optimizer = torch.optim.AdamW(ESFP)
+
+        self.dropout = torch.nn.Dropout(p=dropout)
         
     def _init_weights(self):
         
@@ -88,39 +90,54 @@ class ESFPNetStructure(nn.Module):
             out_1 = blk(out_1, H, W)
         out_1 = self.backbone.norm1(out_1)
         out_1 = out_1.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()  #(Batch_Size, self.backbone.embed_dims[0], 88, 88)
-        
+        out_1 = self.dropout(out_1)
+
+
         # stage 2
         out_2, H, W = self.backbone.patch_embed2(out_1)
         for i, blk in enumerate(self.backbone.block2):
             out_2 = blk(out_2, H, W)
         out_2 = self.backbone.norm2(out_2)
         out_2 = out_2.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()  #(Batch_Size, self.backbone.embed_dims[1], 44, 44)
-        
+        out_2 = self.dropout(out_2)
+
         # stage 3
         out_3, H, W = self.backbone.patch_embed3(out_2)
         for i, blk in enumerate(self.backbone.block3):
             out_3 = blk(out_3, H, W)
         out_3 = self.backbone.norm3(out_3)
         out_3 = out_3.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()  #(Batch_Size, self.backbone.embed_dims[2], 22, 22)
+        out_3 = self.dropout(out_3)
         
+
         # stage 4
         out_4, H, W = self.backbone.patch_embed4(out_3)
         for i, blk in enumerate(self.backbone.block4):
             out_4 = blk(out_4, H, W)
         out_4 = self.backbone.norm4(out_4)
         out_4 = out_4.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()  #(Batch_Size, self.backbone.embed_dims[3], 11, 11)
-        
+        out_4 = self.dropout(out_4)
+
         # go through LP Header
         lp_1 = self.LP_1(out_1)
         lp_2 = self.LP_2(out_2)  
         lp_3 = self.LP_3(out_3)  
         lp_4 = self.LP_4(out_4)
+
+        lp_1 = self.dropout(lp_1)
+        lp_2 = self.dropout(lp_2)  
+        lp_3 = self.dropout(lp_3)  
+        lp_4 = self.dropout(lp_4)
         
         # linear fuse and go pass LP Header
         lp_34 = self.LP_34(self.linear_fuse34(torch.cat([lp_3, F.interpolate(lp_4,scale_factor=2,mode='bilinear', align_corners=False)], dim=1)))
         lp_23 = self.LP_23(self.linear_fuse23(torch.cat([lp_2, F.interpolate(lp_34,scale_factor=2,mode='bilinear', align_corners=False)], dim=1)))
         lp_12 = self.LP_12(self.linear_fuse12(torch.cat([lp_1, F.interpolate(lp_23,scale_factor=2,mode='bilinear', align_corners=False)], dim=1)))
         
+        lp_34 = self.dropout(lp_34)
+        lp_23 = self.dropout(lp_23)
+        lp_12 = self.dropout(lp_12)
+
         # get the final output
         lp4_resized = F.interpolate(lp_4,scale_factor=8,mode='bilinear', align_corners=False)
         lp3_resized = F.interpolate(lp_34,scale_factor=4,mode='bilinear', align_corners=False)

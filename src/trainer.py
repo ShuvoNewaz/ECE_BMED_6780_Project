@@ -3,10 +3,10 @@ import matplotlib.pyplot as plt
 import torch
 import torchvision.transforms as transforms
 
-from data.image_loader import ImageLoader
+from data.image_loader import ImageLoader, EnsembleLoader
 from utils.metrics import ange_structure_loss, BinaryF1
 from utils.avg_meter import AverageMeter, SegmentationAverageMeter
-from models import ESFPNetStructure, PSPNet, UNet, EnsembleNet
+from models import ESFPNetStructure, PSPNet, UNet, EnsembleNet, single_Conv
 from transforms.data_transforms import get_train_transforms, get_val_transforms
 
 from typing import List, Tuple
@@ -60,32 +60,57 @@ class Trainer:
         elif model_name == 'ensemble':
             self.model = EnsembleNet(**model_args)
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
+        elif model_name == 'single_Conv':
+            self.model = single_Conv(**model_args)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
         else: raise NotImplementedError
         self.model_name = model_name
         self.model = self.model.to(device)
         self.seg_type = seg_type
         dataloader_args = {"num_workers": 1, "pin_memory": True} if torch.cuda.is_available() else {}
 
-        if predict:
-            self.test_dataset = ImageLoader(
-                im_file=test_im, msk_file=test_msk, transform=val_data_transforms)
-            self.test_loader = DataLoader(
-                                            self.test_dataset, batch_size=1, shuffle=False, **dataloader_args
-                                        )
-        else:
-            self.train_dataset = ImageLoader(
-                                                im_file=train_im, msk_file=train_msk, transform=train_data_transforms
+        if seg_type != 'ensemble':
+            if predict:
+                self.test_dataset = ImageLoader(
+                    im_file=test_im, msk_file=test_msk, transform=val_data_transforms)
+                self.test_loader = DataLoader(
+                                                self.test_dataset, batch_size=1, shuffle=False, **dataloader_args
                                             )
-            self.val_dataset = ImageLoader(
-                                                im_file=validation_im, msk_file=validation_msk, transform=val_data_transforms
-                                            )
+            else:
+                self.train_dataset = ImageLoader(
+                                                    im_file=train_im, msk_file=train_msk, transform=train_data_transforms
+                                                )
+                self.val_dataset = ImageLoader(
+                                                    im_file=validation_im, msk_file=validation_msk, transform=val_data_transforms
+                                                )
 
-            self.train_loader = DataLoader(
-                                            self.train_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
+                self.train_loader = DataLoader(
+                                                self.train_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
+                                                )
+                self.val_loader = DataLoader(
+                                                self.val_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
                                             )
-            self.val_loader = DataLoader(
-                                            self.val_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
-                                        )
+        else:
+            if predict:
+                self.test_dataset = EnsembleLoader(
+                    exp=test_im, msk_file=test_msk, transform=val_data_transforms)
+                self.test_loader = DataLoader(
+                                                self.test_dataset, batch_size=1, shuffle=False, **dataloader_args
+                                            )
+            else:
+                self.train_dataset = EnsembleLoader(
+                                                    exp=train_im, msk_file=train_msk, transform=train_data_transforms
+                                                )
+                self.val_dataset = EnsembleLoader(
+                                                    exp=validation_im, msk_file=validation_msk, transform=val_data_transforms
+                                                )
+
+                self.train_loader = DataLoader(
+                                                self.train_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
+                                                )
+                self.val_loader = DataLoader(
+                                                self.val_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
+                                            )
 
         # self.optimizer = optimizer
         self.train_loss_history = []
@@ -181,7 +206,7 @@ class Trainer:
                 logits, y_hat, aux_loss, main_loss = self.model(x, masks)
                 aux_weight = 0.4
                 batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
-            elif self.model_name == 'unet':
+            elif self.model_name == 'unet' or self.model_name == 'single_Conv':
                 logits = self.model(x)
                 batch_loss = self.model.criterion(logits, masks)
             else: raise NotImplementedError
@@ -204,7 +229,10 @@ class Trainer:
         self.model.eval()
 
         val_loss_meter = AverageMeter()
-        val_acc_meter = AverageMeter()
+        # val_acc_meter = AverageMeter()
+
+        all_masks = []
+        all_outputs = []
 
         # loop over whole val set
         for (x, masks) in self.val_loader:
@@ -214,27 +242,32 @@ class Trainer:
 
             n = x.shape[0]
 
+            with torch.no_grad():
+                if self.model_name == 'esfpnet':
+                    logits = self.model(x)
+                    batch_loss = ange_structure_loss(logits, masks)
+                elif self.model_name == 'pspnet':
+                    logits, y_hat, aux_loss, main_loss = self.model(x, masks)
+                    aux_weight = 0.4
+                    batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
+                elif self.model_name == 'unet' or self.model_name == 'single_Conv':
+                    logits = self.model(x)
+                    batch_loss = self.model.criterion(logits, masks)
+                else:
+                    raise NotImplementedError
+                
+                val_loss_meter.update(val=float(batch_loss.cpu().item()), n=n)
+                all_masks.append(masks.cpu())
+                all_outputs.append(logits.cpu())
 
-            if self.model_name == 'esfpnet':
-                logits = self.model(x)
-                batch_loss = ange_structure_loss(logits, masks)
-            elif self.model_name == 'pspnet':
-                logits, y_hat, aux_loss, main_loss = self.model(x, masks)
-                aux_weight = 0.4
-                batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
-            elif self.model_name == 'unet':
-                logits = self.model(x)
-                batch_loss = self.model.criterion(logits, masks)
-            else:
-                raise NotImplementedError
-            
-            val_loss_meter.update(val=float(batch_loss.cpu().item()), n=n)
+                # batch_f1 = BinaryF1(logits, masks)
+                # val_acc_meter.update(val=float(batch_f1.cpu().item()), n=n)
+                torch.cuda.empty_cache()
 
-            batch_f1 = BinaryF1(logits, masks)
-            val_acc_meter.update(val=float(batch_f1.cpu().item()), n=n)
-            torch.cuda.empty_cache()
+        logits = torch.cat(all_outputs, dim=0)
+        masks = torch.cat(all_masks)
 
-        return val_loss_meter.avg, val_acc_meter.avg
+        return val_loss_meter.avg, BinaryF1(logits, masks)
 
     def predict(self) -> Tuple[np.ndarray, np.ndarray]:
         """Evaluate on held-out split (either val or test)"""
@@ -242,10 +275,11 @@ class Trainer:
         with torch.no_grad():
             self.model.eval()
             original_images = []
-            predictions = []
             # loop over whole val set
 
-            f1_meter = AverageMeter()
+            # f1_meter = AverageMeter()
+            all_logits = []
+            all_masks = []
             for x, masks in self.test_loader:
                 x = x.to(device)
                 n = x.shape[0]
@@ -260,26 +294,24 @@ class Trainer:
                     batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
                     prob = torch.sigmoid(logits)
                 else: raise NotImplementedError
-
-                batch_f1 = BinaryF1(logits, masks)
-                f1_meter.update(val=float(batch_f1.cpu().item()), n=n)
-
                 
-                prediction = (prob > 0.5).int().cpu().numpy()
+                # prediction = (prob > 0.5).int().cpu().numpy()
+                all_logits.append(logits.cpu())
+                all_masks.append(masks.cpu())
 
                 x = x.squeeze(1).detach().cpu().numpy()
 
                 # Store images for viewing
 
                 original_images.append(x)
-                predictions.append(prediction)
         original_images = np.concatenate(original_images, axis=0)
-        predictions = np.concatenate(predictions, axis=0)
+        logits = torch.cat(all_logits, dim=0)
+        masks = torch.cat(all_masks, dim=0)
         if self.test_dataset.msk_file:
-            self.logger.info(f"F1 score {f1_meter.avg}")
+            self.logger.info(f"F1 score {BinaryF1(logits, masks)}")
         else:
             self.logger.warning("Test mask not found, skip evaluation")
-        return original_images, predictions
+        return original_images, logits.numpy()
 
     def plot_loss_history(self, ax) -> None:
         """Plots the loss history"""
@@ -307,6 +339,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default='config/esfpnet.py', type=str)
     parser.add_argument("--predict", action="store_true")
+    parser.add_argument("--draw_outputs", action="store_true")
     parser.add_argument('--options', nargs='+', action=DictAction, help='custom options')
     args = parser.parse_args()
 
@@ -338,18 +371,23 @@ if __name__ == "__main__":
                  logger = logger,
                  predict=args.predict)
     if args.predict:
-        original_images, predictions = runner.predict()
+        original_images, logits = runner.predict()
+        predictions = (logits > 0).astype(np.int32)
         N = original_images.shape[0]
         
-        fig = plt.figure(figsize=(16, 4))
-        for idx in range(N):
-            ax = plt.subplot(2, N, idx+1)
-            plt.imshow(original_images[idx], cmap='gray')
-            plt.axis('off')
-            ax = plt.subplot(2, N, N+idx+1)
-            plt.imshow(predictions[idx], cmap='gray')
-            plt.axis('off')
-        fig.savefig(os.path.join(cfg.exp, "predictions.png"))
+        if args.draw_outputs:
+            fig = plt.figure(figsize=(16, 4))
+            for idx in range(N):
+                ax = plt.subplot(2, N, idx+1)
+                plt.imshow(original_images[idx], cmap='gray')
+                plt.axis('off')
+                ax = plt.subplot(2, N, N+idx+1)
+                plt.imshow(predictions[idx], cmap='gray')
+                plt.axis('off')
+            fig.savefig(os.path.join(cfg.exp, "predictions.png"))
+
+        # with open(os.path.join(cfg.exp, "logits.npy"), 'wb') as f:
+            # np.save(f, logits)
 
     else:
         runner.run_training_loop(num_epochs=cfg.num_epochs)

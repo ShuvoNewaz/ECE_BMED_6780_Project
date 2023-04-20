@@ -9,6 +9,7 @@ model = dict(
         model_name='esfpnet',
         args = dict(
             model_type='B5',
-            embedding_dim = 160
+            embedding_dim = 160,
+            dropout=0
         )
     )

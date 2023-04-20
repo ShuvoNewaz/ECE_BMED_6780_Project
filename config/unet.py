@@ -9,6 +9,7 @@ model = dict(
         model_name='unet',
         args = dict(
             n_channels = 1,
-            n_classes = 1
+            n_classes = 1,
+            dropout=0
         )
     )

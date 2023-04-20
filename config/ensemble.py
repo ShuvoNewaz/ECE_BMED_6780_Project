@@ -1,32 +1,19 @@
 _base_ = ['base.py']
 
 exp='exp/ensemble'
+seg_type='ensemble'
+num_epochs=10
 
-# Uncomment this line to evaluate results on the validation set
-# data=dict(test=dict(im='data/val_im.nii.gz', msk='data/val_mask.nii.gz'))
+model=dict(model_name='single_Conv', args=
+    dict(
+        in_channels=1,
+        out_channels=1,
+        kernel_size=(3,3),
+        dilation=0
+    ))
 
-unet = dict(
-        model_name='unet',
-        args = dict(
-            n_channels = 1,
-            n_classes = 1
-        ),
-        pretrained = "exp/covid-ct-unet/best.pt"
-)
-
-esfpnet = dict(
-    model_name='esfpnet',
-    args = dict(
-        model_type='B5',
-        embedding_dim = 160
-    ),
-    pretrained = "exp/covid-ct-esfpnet/best.pt"
-)
-
-model = dict(
-    model_name = 'ensemble',
-    args = dict(
-        models = [unet, esfpnet],
-        method = "average"
-    )
+data=dict(
+    train=dict(im=exp, msk='data/tr_mask.nii.gz'),
+    val=dict(im=exp, msk='data/tr_mask.nii.gz'),
+    test=dict(im=exp, msk=''),
 )
