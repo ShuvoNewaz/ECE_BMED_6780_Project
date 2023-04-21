@@ -1,6 +1,7 @@
-from typing import Tuple
+from typing import Tuple, List
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 
 def Intersection_Union(
@@ -36,11 +37,21 @@ def Intersection_Union(
     return area_intersection, area_union, area_target
 
 
-def IOU(
-    output: torch.Tensor, target: torch.Tensor, K: int, ignore_index: int = 255) -> float:
-    area_intersection, area_union, area_target = Intersection_Union(output, target, K, ignore_index)
+def IOU(prediction, target):
+    prediction = prediction.numpy()
+    target = target.numpy()
+    intersection = np.logical_and(target, prediction)
+    union = np.logical_or(target, prediction)
+    iou_score = np.sum(intersection) / np.sum(union)
 
-    return area_intersection / area_union
+    return iou_score
+
+
+def BinaryF1(prediction, target):
+    recall = torch.mean((prediction[target == 1] == 1).float())
+    precision = torch.mean((1 == target[prediction == 1]).float())
+
+    return (2*precision*recall / (precision + recall)).nan_to_num(0)
 
 
 def ange_structure_loss(pred, mask, smooth=1):
@@ -69,5 +80,73 @@ def dice_loss_coff(pred, target, smooth = 0.0001):
     loss = (2. * intersection + smooth) / (pred.sum(dim=2).sum(dim=2) + target.sum(dim=2).sum(dim=2) + smooth)
     
     return loss.sum()/num
+
+
+def sample_variance(y: List[np.ndarray]):
+    """
+        Args:
+            y: Probability of classes of all test images in all neural nets (T, no. of test images, C, H, W)
+        Returns:
+            var: Sample Variance (no. of test images, H, W)
+    """
+    T = len(y)
+    N, C, H, W = y[0].shape
+    var = 0
+    for c in range(C):
+        E_x2, E_2x = 0, 0
+        for t in range(T):
+            E_x2 = E_x2 + (y[t][:, c, :, :])**2
+            E_2x = E_2x + y[t][:, c, :, :]
+        E_x2 = 1/T * E_x2
+        E_2x = (1/T * E_2x) ** 2
+        var = var + E_x2 - E_2x
+    var = 1/C * var
+
+    return var
+
+
+def predictive_entropy(y: List[np.ndarray]):
+    """
+        Args:
+            C: Number of classes
+            y: Probability of classes of all test images in all neural nets (T, no. of test images, C, H, W)
+        Returns:
+            H: Predictive Entropy (no. of test images, H, W)
+    """
+    T = len(y)
+    N, C, H, W = y[0].shape
+    H = 0
+    for c in range(C):
+        term = 0
+        for t in range(T):
+            term = term + y[t][:, c, :, :]
+        term = 1/T * term
+        H = H + term * torch.log(term)
+    H = - H
+
+    return H
+
+
+def mutual_information(y: List[np.ndarray]):
+    """
+        Args:
+            y: Probability of classes of all test images in all neural nets (T, no. of test images, C, H, W)
+        Returns:
+            MI: Mutual Information (no. of test images, C, H, W)
+    """
+    T = len(y)
+    N, C, H, W = y[0].shape
+    MI = np.zeros((N, C, H, W))
+
+    H = predictive_entropy(y)
+    for c in range(C):
+        term = 0
+        for t in range(T):
+            entropy = y[t][:, c, :, :] * np.log(y[t][:, c, :, :])
+            term = term + entropy
+        term = -1/T * term
+        MI[:, c, :, :] = H - term
+    
+    return MI
 
 

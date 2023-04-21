@@ -5,7 +5,7 @@ import torchvision.transforms as transforms
 from src.image_loader import *
 from src.metrics import *
 from src.avg_meter import AverageMeter, SegmentationAverageMeter
-from src.esfpnet import ESFPNetStructure
+# from src.esfpnet import ESFPNetStructure
 from src.pspnet import *
 from src.unet_model import UNetDummy as UNet
 from typing import List, Tuple
@@ -59,6 +59,7 @@ class Trainer:
                 self.optimizer_2.append(torch.optim.AdamW(self.infection_segmenter1[t].parameters(), lr=1e-4))
             
             self.infection_segmenter2 = UNet(n_channels=num_classes*T+2, n_classes=num_classes)
+            self.infection_segmenter2 = UNet(n_channels=3, n_classes=num_classes)
             self.optimizer_3 = torch.optim.AdamW(self.infection_segmenter2.parameters(), lr=1e-4)
         self.model_name = model_name
         # self.model = self.model.to(device)
@@ -72,7 +73,7 @@ class Trainer:
         # self.infection_segmenter2 = self.infection_segmenter2.to(device)
         # print('After models to GPU', torch.cuda.memory_allocated(0))
 
-        dataloader_args = {"num_workers": 1, "pin_memory": True} if torch.cuda.is_available() else {}
+        dataloader_args = {"num_workers": 4, "pin_memory": True} if torch.cuda.is_available() else {}
         dataloader_args = {}
 
         self.train_dataset = ImageLoader(
@@ -95,11 +96,14 @@ class Trainer:
 
         self.train_loss_history_stage1 = []
         self.train_IOU_history_stage1 = []
+        self.train_f1_history_stage1 = []
 
         self.train_loss_history = []
         self.validation_loss_history = []
         self.train_IOU_history = []
         self.validation_IOU_history = []
+        self.train_f1_history = []
+        self.validation_f1_history = []
 
         # load the model from the disk if it exists
         if os.path.exists(model_dir) and load_from_disk:
@@ -124,33 +128,35 @@ class Trainer:
         """Train for num_epochs, and validate after every epoch."""
         for epoch_idx in range(num_epochs):
             save_im = epoch_idx == num_epochs-1 # Save images only from the last epoch
-            train_loss, train_IOU = self.train_epoch_stage1(save_im)
+            train_loss, train_IOU, train_f1 = self.train_epoch_stage1(save_im)
 
             self.train_loss_history_stage1.append(train_loss)
             self.train_IOU_history_stage1.append(train_IOU)
+            self.train_f1_history_stage1.append(train_f1)
 
             val_loss, val_IOU = self.validate_stage1(save_im)
-            # self.validation_loss_history.append(val_loss)
-            # self.validation_IOU_history.append(val_IOU)
 
             print(
                 f"Epoch:{epoch_idx + 1}"
                 + f" Train Loss:{train_loss:.4f}"
                 + f" Train IOU: {train_IOU:.4f}"
+                + f" Train F1 Score: {train_f1:.4f}"
             )
 
     def run_training_loop(self, num_epochs: int) -> None:
         """Train for num_epochs, and validate after every epoch."""
         for epoch_idx in range(num_epochs):
             save_im = epoch_idx == num_epochs-1 # Save images only from the last epoch
-            train_loss, train_IOU = self.train_epoch(save_im)
 
+            train_loss, train_IOU, train_f1 = self.train_epoch(save_im)
             self.train_loss_history.append(train_loss)
             self.train_IOU_history.append(train_IOU)
+            self.train_f1_history.append(train_f1)
 
-            val_loss, val_IOU = self.validate(save_im)
+            val_loss, val_IOU, val_f1 = self.validate(save_im)
             self.validation_loss_history.append(val_loss)
             self.validation_IOU_history.append(val_IOU)
+            self.validation_f1_history.append(val_f1)
 
             print(
                 f"Epoch:{epoch_idx + 1}"
@@ -158,6 +164,8 @@ class Trainer:
                 + f" Val Loss: {val_loss:.4f}"
                 + f" Train IOU: {train_IOU:.4f}"
                 + f" Validation IOU: {val_IOU:.4f}"
+                + f" Train F1 Score: {train_f1:.4f}"
+                + f" Validation F1 Score: {val_f1:.4f}"
             )
 
     def train_epoch_stage1(self, save_im: bool=False) -> Tuple[float, float]:
@@ -168,6 +176,7 @@ class Trainer:
 
         train_loss_meter = AverageMeter()
         train_IOU_meter = AverageMeter()
+        train_f1_meter = AverageMeter()
 
         # loop over each minibatch
 
@@ -195,6 +204,7 @@ class Trainer:
                 y_hat = (y_hat > 0.5) * 1
             elif self.model_name == 'unet':
                 y_hat = torch.argmax(lung_logits, dim=1)
+            f1_score = BinaryF1(y_hat, lung_mask)
 
             # Clear from GPU
 
@@ -203,11 +213,8 @@ class Trainer:
             lung_logits = lung_logits.detach().cpu()
             lung_mask = lung_mask.detach().cpu()
             stage1_loss = stage1_loss.detach().cpu()
-            y_hat = y_hat.detach().cpu()                
-            # elif self.model_name == 'pspnet':
-            #     logits, y_hat, aux_loss, main_loss = self.model(x, masks)
-            #     aux_weight = 0.4
-            #     batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
+            y_hat = y_hat.detach().cpu()
+            f1_score = f1_score.detach().cpu()
 
             # print('After stage 1 to CPU', torch.cuda.memory_allocated(0))
 
@@ -215,6 +222,8 @@ class Trainer:
 
             iou = IOU(y_hat, lung_mask) # Calculate IOUs
             train_IOU_meter.update(val=float(iou), n=n)
+            train_f1_meter.update(val=float(f1_score), n=n)
+
             if self.model_name == 'pspnet':
                 main_loss = main_loss.detach().cpu()
                 aux_loss = aux_loss.detach().cpu()
@@ -238,7 +247,7 @@ class Trainer:
                     self.lung_mask_train = np.concatenate((self.lung_mask_train, lung_mask))
                     self.original_masks_train = np.concatenate((self.original_masks_train, inf_mask))
 
-        return train_loss_meter.avg, train_IOU_meter.avg
+        return train_loss_meter.avg, train_IOU_meter.avg, train_f1_meter.avg
     
     def validate_stage1(self, save_im: bool=False) -> Tuple[float, float]:
         """Evaluate on held-out split (either val or test)"""
@@ -319,6 +328,7 @@ class Trainer:
 
         train_loss_meter = AverageMeter()
         train_IOU_meter = AverageMeter()
+        train_f1_meter = AverageMeter()
 
         # loop over each minibatch
 
@@ -350,7 +360,7 @@ class Trainer:
                 # Stage 2
                 
                 T_probabilities = torch.zeros(self.T, n, self.num_classes, image.shape[2], image.shape[3])
-                T_preds = torch.zeros(n, self.T, image.shape[2], image.shape[3])
+                # T_preds = torch.zeros(n, self.T, image.shape[2], image.shape[3])
                 stage2_loss_total = 0
                 for t in range(self.T):
                     self.infection_segmenter1[t] = self.infection_segmenter1[t].to(device)
@@ -375,25 +385,28 @@ class Trainer:
                     stage2_loss = stage2_loss.detach().cpu()
                     stage2_loss_total = stage2_loss_total + stage2_loss
                     T_probabilities[t] = prob # Store T probabilities for each image in the batch
-                    T_preds[:, t] = y_hat_inf_1
-                lung_image = lung_image.detach().cpu()
+                    # T_preds[:, t] = y_hat_inf_1
 
-                T_preds = T_preds.to(device).detach()
-                T_probabilities = T_probabilities.to(device).detach()
+                # T_preds = T_preds.detach()
+                T_probabilities = T_probabilities.detach()
                 sam_var = sample_variance(T_probabilities)
                 pred_ent = predictive_entropy(T_probabilities)
+                sam_var = sam_var.to(device)
+                pred_ent = pred_ent.to(device)
 
-                T_probabilities = torch.swapaxes(T_probabilities, 0, 1)
-                T_probabilities = T_probabilities.reshape(n, self.T*self.num_classes, image.shape[2], image.shape[3])
+                # T_probabilities = torch.swapaxes(T_probabilities, 0, 1)
+                # T_probabilities = T_probabilities.reshape(n, self.T*self.num_classes, image.shape[2], image.shape[3])
                 
                 # Stage 3
 
                 self.infection_segmenter2 = self.infection_segmenter2.to(device)
                 # print('After stage 3 to GPU', torch.cuda.memory_allocated(0))
                 # inf_logits2 = self.infection_segmenter2(torch.concat((T_preds, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-                inf_logits2 = self.infection_segmenter2(torch.concat((T_probabilities, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
+                # inf_logits2 = self.infection_segmenter2(torch.concat((T_probabilities, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
+                inf_logits2 = self.infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
                 stage3_loss = self.infection_segmenter2.criterion(inf_logits2, inf_mask)
                 y_hat = torch.argmax(inf_logits2, dim=1)
+                f1_score = BinaryF1(y_hat, inf_mask)
 
                 self.optimizer_3.zero_grad()
                 stage3_loss.backward()
@@ -404,7 +417,10 @@ class Trainer:
                 self.infection_segmenter2 = self.infection_segmenter2.cpu()
                 inf_logits2 = inf_logits2.detach().cpu()
                 stage3_loss = stage3_loss.detach().cpu()
+                f1_score = f1_score.detach().cpu()
+                lung_image = lung_image.detach().cpu()
                 # print('After stage 3 to CPU', torch.cuda.memory_allocated(0))
+                train_f1_meter.update(val=float(f1_score.item()), n=n)
 
                 batch_loss = stage2_loss_total + stage3_loss
 
@@ -415,7 +431,7 @@ class Trainer:
 
             inf_mask = inf_mask.detach().cpu()
             y_hat = y_hat.detach().cpu()
-            T_preds = T_preds.cpu()
+            # T_preds = T_preds.cpu()
             T_probabilities = T_probabilities.cpu()
             sam_var = sam_var.detach().cpu()
             pred_ent = pred_ent.detach().cpu()
@@ -440,7 +456,7 @@ class Trainer:
                     if self.model_name == 'unet':
                         self.probability_train = np.concatenate((self.probability_train, prob))
 
-        return train_loss_meter.avg, train_IOU_meter.avg
+        return train_loss_meter.avg, train_IOU_meter.avg, train_f1_meter.avg
 
     def validate(self, save_im: bool=False) -> Tuple[float, float]:
         """Evaluate on held-out split (either val or test)"""
@@ -453,6 +469,7 @@ class Trainer:
 
         val_loss_meter = AverageMeter()
         val_IOU_meter = AverageMeter()
+        val_f1_meter = AverageMeter()
 
         # loop over each minibatch
 
@@ -485,7 +502,7 @@ class Trainer:
                 # Stage 2
                 
                 T_probabilities = torch.zeros(self.T, n, self.num_classes, image.shape[2], image.shape[3])
-                T_preds = torch.zeros(n, self.T, image.shape[2], image.shape[3])
+                # T_preds = torch.zeros(n, self.T, image.shape[2], image.shape[3])
                 stage2_loss_total = 0
                 for t in range(self.T):
                     self.infection_segmenter1[t] = self.infection_segmenter1[t].to(device)
@@ -505,40 +522,46 @@ class Trainer:
                     stage2_loss = stage2_loss.detach().cpu()
                     stage2_loss_total = stage2_loss_total + stage2_loss
                     T_probabilities[t] = prob # Store T probabilities for each image in the batch
-                    T_preds[:, t] = y_hat_inf_1
-                lung_image = lung_image.detach().cpu()
+                    # T_preds[:, t] = y_hat_inf_1
 
-                T_preds = T_preds.to(device).detach() # Moved to GPU for later use
-                T_probabilities = T_probabilities.to(device).detach()
+                # T_preds = T_preds.detach()
+                T_probabilities = T_probabilities.detach()
                 sam_var = sample_variance(T_probabilities)
                 pred_ent = predictive_entropy(T_probabilities)
+                sam_var = sam_var.to(device)
+                pred_ent = pred_ent.to(device)
 
-                T_probabilities = torch.swapaxes(T_probabilities, 0, 1)
-                T_probabilities = T_probabilities.reshape(n, self.T*self.num_classes, image.shape[2], image.shape[3])
+                # T_probabilities = torch.swapaxes(T_probabilities, 0, 1)
+                # T_probabilities = T_probabilities.reshape(n, self.T*self.num_classes, image.shape[2], image.shape[3])
                 
                 # Stage 3
 
                 self.infection_segmenter2 = self.infection_segmenter2.to(device)
                 # inf_logits2 = self.infection_segmenter2(torch.concat((T_preds, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-                inf_logits2 = self.infection_segmenter2(torch.concat((T_probabilities, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
+                # inf_logits2 = self.infection_segmenter2(torch.concat((T_probabilities, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
+                inf_logits2 = self.infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
                 stage3_loss = self.infection_segmenter2.criterion(inf_logits2, inf_mask)
                 y_hat = torch.argmax(inf_logits2, dim=1)
+                f1_score = BinaryF1(y_hat, inf_mask)
 
                 # Clear from GPU
 
                 self.infection_segmenter2 = self.infection_segmenter2.cpu()
                 inf_logits2 = inf_logits2.detach().cpu()
                 stage3_loss = stage3_loss.detach().cpu()
+                f1_score = f1_score.detach().cpu()
+                lung_image = lung_image.detach().cpu()
 
                 batch_loss = stage2_loss_total + stage3_loss
 
                 val_loss_meter.update(val=float(batch_loss.item()), n=n)
+                val_f1_meter.update(val=float(f1_score.item()), n=n)
 
             # Empty GPU memory
 
             inf_mask = inf_mask.detach().cpu()
             y_hat = y_hat.detach().cpu()
-            T_preds = T_preds.cpu()
+            # T_preds = T_preds.cpu()
             T_probabilities = T_probabilities.cpu()
             sam_var = sam_var.detach().cpu()
             pred_ent = pred_ent.detach().cpu()
@@ -565,7 +588,7 @@ class Trainer:
                     if self.model_name == 'unet':
                         self.probability_val = np.concatenate((self.probability_val, prob))
 
-        return val_loss_meter.avg, val_IOU_meter.avg
+        return val_loss_meter.avg, val_IOU_meter.avg, val_f1_meter.avg
     
 
 def plot_history(plot_description: str, plot_list_train: List, plot_list_val: List=None):

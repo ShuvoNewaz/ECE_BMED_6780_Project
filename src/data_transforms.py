@@ -8,12 +8,13 @@ def get_train_transforms() -> transforms.Compose:
     std = [0.229, 0.224, 0.225]
     std = [item * value_scale for item in std]
     data_transforms = transforms.Compose([
+                                            # transforms.ToPILImage(),
                                             transforms.ToTensor(),
-                                            # transforms.RandomHorizontalFlip(0.6), # Comment
-                                            # transforms.RandomVerticalFlip(0.6),
+                                            transforms.RandomHorizontalFlip(0.6), # Comment
+                                            transforms.RandomVerticalFlip(0.6),
+                                            transforms.RandomRotation(30), # Comment to obtain required accuracy in ResNets
                                             # transforms.GaussianBlur([5, 1]),
                                             # transforms.RandomCrop(480), # Comment
-                                            # transforms.RandomRotation(30), # Comment to obtain required accuracy in ResNets
                                             # transforms.Normalize(mean=mean, std=std)
                                         ])
 
@@ -27,6 +28,7 @@ def get_val_transforms() -> transforms.Compose:
     std = [0.229, 0.224, 0.225]
     std = [item * value_scale for item in std]
     data_transforms = transforms.Compose([
+                                            # transforms.ToPILImage(),
                                             transforms.ToTensor(),
                                             # transforms.Normalize(mean=mean, std=std)
                                         ])

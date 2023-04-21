@@ -7,11 +7,10 @@ from src.metrics import *
 from src.avg_meter import AverageMeter, SegmentationAverageMeter
 from src.esfpnet import ESFPNetStructure
 from src.pspnet import *
-from src.unet_model import UNetDummy as UNet
+from src.unet_model import UNet#Dummy as UNet
 from typing import List, Tuple
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, random_split
-from typing import List
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -180,36 +179,53 @@ class Trainer:
             # print('After Data to GPU', torch.cuda.memory_allocated(0))
 
             n = image.shape[0]
-
-            # Stage 1
-
-            lung_mask = lung_mask.long()
-            self.lung_segmenter = self.lung_segmenter.to(device)
-            lung_logits = self.lung_segmenter(image)
-            stage1_loss = self.lung_segmenter.criterion(lung_logits, lung_mask)
-            self.optimizer_1.zero_grad()
-            stage1_loss.backward()
-            self.optimizer_1.step()
             if self.model_name == 'esfpnet':
+                # Stage 1
+                
+                self.lung_segmenter = self.lung_segmenter.to(device)
+                lung_logits = self.lung_segmenter(image)
+                stage1_loss = self.lung_segmenter.criterion(lung_logits, lung_mask)
+                self.optimizer_1.zero_grad()
+                stage1_loss.backward()
+                self.optimizer_1.step()
                 y_hat = torch.sigmoid(lung_logits)
                 y_hat = (y_hat > 0.5) * 1
-            elif self.model_name == 'unet':
-                y_hat = torch.argmax(lung_logits, dim=1)
 
-            # Clear from GPU
+                # Clear from GPU
 
-            self.lung_segmenter = self.lung_segmenter.cpu()
-            image = image.detach().cpu()
-            lung_logits = lung_logits.detach().cpu()
-            lung_mask = lung_mask.detach().cpu()
-            stage1_loss = stage1_loss.detach().cpu()
-            y_hat = y_hat.detach().cpu()                
+                self.lung_segmenter = self.lung_segmenter.cpu()
+                image = image.detach().cpu()
+                lung_logits = lung_logits.detach().cpu()
+                lung_mask = lung_mask.detach().cpu()
+                stage1_loss = stage1_loss.detach().cpu()
+                y_hat = y_hat.detach().cpu()                
             # elif self.model_name == 'pspnet':
             #     logits, y_hat, aux_loss, main_loss = self.model(x, masks)
             #     aux_weight = 0.4
             #     batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
+            elif self.model_name == 'unet':
+                lung_mask = lung_mask.long()
 
-            # print('After stage 1 to CPU', torch.cuda.memory_allocated(0))
+                # Stage 1
+
+                self.lung_segmenter = self.lung_segmenter.to(device)
+                lung_logits = self.lung_segmenter(image)
+                y_hat = torch.argmax(lung_logits, dim=1)
+                stage1_loss = self.lung_segmenter.criterion(lung_logits, lung_mask)
+                self.optimizer_1.zero_grad()
+                stage1_loss.backward()
+                self.optimizer_1.step()
+
+                # Clear from GPU
+
+                self.lung_segmenter = self.lung_segmenter.cpu()
+                image = image.detach().cpu()
+                lung_logits = lung_logits.detach().cpu()
+                lung_mask = lung_mask.detach().cpu()
+                stage1_loss = stage1_loss.detach().cpu()
+                y_hat = y_hat.detach().cpu()
+
+                # print('After stage 1 to CPU', torch.cuda.memory_allocated(0))
 
             train_loss_meter.update(val=float(stage1_loss.item()), n=n)
 
@@ -246,45 +262,74 @@ class Trainer:
         
         self.lung_segmenter.eval()
 
+        val_loss_meter = AverageMeter()
+        val_IOU_meter = AverageMeter()
+
         # loop over each minibatch
 
         for batch_number, (image, inf_mask) in enumerate(self.val_loader):
             image = image.to(device)
+            # inf_mask = torch.squeeze(inf_mask, dim=1) # Compensating for the transforms
             n = image.shape[0]
-
-            # Stage 1
-            
-            self.lung_segmenter = self.lung_segmenter.to(device)
-            lung_logits = self.lung_segmenter(image)
             if self.model_name == 'esfpnet':
+                # Stage 1
+                
+                self.lung_segmenter = self.lung_segmenter.to(device)
+                lung_logits = self.lung_segmenter(image) 
                 lung_mask = torch.sigmoid(lung_logits)
                 lung_mask = (lung_mask > 0.5) * 1
-            elif self.model_name == 'unet':
-                lung_mask = torch.argmax(lung_logits, dim=1)
-            
-            # Create the lung regions for validation set
+                
+                # Create the lung regions for validation set
 
-            lung_image = torch.zeros(image.shape).double().to(device)
-            for image_index in range(n):
-                lung_index = lung_mask[image_index] != 0
-                background_index = lung_mask[image_index] == 0
-                lung_image[image_index, 0][lung_index] = image[image_index, 0][lung_index]
-                lung_image[image_index, 0][background_index] = torch.min(image[image_index, 0])
+                lung_image = torch.zeros(image.shape).double().to(device)
+                for image_index in range(n):
+                    lung_index = lung_mask[image_index] != 0
+                    background_index = lung_mask[image_index] == 0
+                    lung_image[image_index, 0][lung_index] = image[image_index, 0][lung_index]
+                    lung_image[image_index, 0][background_index] = torch.min(image[image_index, 0])
 
-            stage1_loss = 0 # No lung masks available
-            
-            # Clear from GPU
+                stage1_loss = 0 # No lung masks available
+                
+                # Clear from GPU
 
-            self.lung_segmenter = self.lung_segmenter.cpu()
-            image = image.detach().cpu()
-            lung_logits = lung_logits.detach().cpu()
-            lung_mask = lung_mask.detach().cpu()
-            lung_image = lung_image.detach().cpu()
+                self.lung_segmenter = self.lung_segmenter.cpu()
+                image = image.detach().cpu()
+                lung_logits = lung_logits.detach().cpu()
+                lung_mask = lung_mask.detach().cpu()
+                lung_image = lung_image.detach().cpu()
 
             # elif self.model_name == 'pspnet':
             #     logits, y_hat, aux_loss, main_loss = self.model(x, masks)
             #     aux_weight = 0.4
             #     batch_loss = torch.mean(main_loss) + aux_weight * torch.mean(aux_loss)
+            elif self.model_name == 'unet':
+                inf_mask = inf_mask.long()
+
+                # Stage 1
+
+                self.lung_segmenter = self.lung_segmenter.to(device)
+                lung_logits = self.lung_segmenter(image)
+                lung_mask = torch.argmax(lung_logits, dim=1)
+
+                # Create the lung regions for validation set
+
+                lung_image = torch.zeros(image.shape).double().to(device)
+                for image_index in range(n):
+                    lung_index = lung_mask[image_index] != 0
+                    background_index = lung_mask[image_index] == 0
+                    lung_image[image_index, 0][lung_index] = image[image_index, 0][lung_index]
+                    lung_image[image_index, 0][background_index] = torch.min(image[image_index, 0])
+
+                stage1_loss = 0 # No lung masks available
+
+                # Clear from GPU
+
+                self.lung_segmenter = self.lung_segmenter.cpu()
+                image = image.detach().cpu()
+                lung_logits = lung_logits.detach().cpu()
+                lung_mask = lung_mask.detach().cpu()
+                lung_image = lung_image.detach().cpu()
+                # stage1_loss = stage1_loss.cpu()
 
             if self.model_name == 'pspnet':
                 main_loss = main_loss.detach().cpu()
@@ -567,14 +612,44 @@ class Trainer:
 
         return val_loss_meter.avg, val_IOU_meter.avg
     
+    def plot_loss_history_stage1(self) -> None:
+        """Plots the loss history"""
+        epoch_idxs = range(len(self.train_loss_history_stage1))
+        plt.xticks(epoch_idxs[::5], epoch_idxs[::5])
+        plt.plot(epoch_idxs, self.train_loss_history_stage1, "-b", label="training")
+        plt.title("Loss history")
+        plt.legend()
+        plt.ylabel("Loss")
+        plt.xlabel("Epochs")
 
-def plot_history(plot_description: str, plot_list_train: List, plot_list_val: List=None):
-    epoch_idxs = range(len(plot_list_train))
-    plt.xticks(epoch_idxs[::5], epoch_idxs[::5])
-    plt.plot(epoch_idxs, plot_list_train, "-b", label="training")
-    if plot_list_val:
-        plt.plot(epoch_idxs, plot_list_val, "-r", label="validation")
-    plt.title(plot_description)
-    plt.legend()
-    plt.ylabel(plot_description.split(' ')[0])
-    plt.xlabel("Epochs")
+    def plot_IOU_history_stage1(self) -> None:
+        """Plots the IOU history"""
+        epoch_idxs = range(len(self.train_IOU_history_stage1))
+        plt.xticks(epoch_idxs[::5], epoch_idxs[::5])
+        plt.plot(epoch_idxs, self.train_IOU_history_stage1, "-b", label="training")
+        plt.title("IOU history")
+        plt.legend()
+        plt.ylabel("IOU")
+        plt.xlabel("Epochs")
+
+    def plot_loss_history(self) -> None:
+        """Plots the loss history"""
+        epoch_idxs = range(len(self.train_loss_history))
+        plt.xticks(epoch_idxs[::5], epoch_idxs[::5])
+        plt.plot(epoch_idxs, self.train_loss_history, "-b", label="training")
+        plt.plot(epoch_idxs, self.validation_loss_history, "-r", label="validation")
+        plt.title("Loss history")
+        plt.legend()
+        plt.ylabel("Loss")
+        plt.xlabel("Epochs")
+
+    def plot_IOU_history(self) -> None:
+        """Plots the IOU history"""
+        epoch_idxs = range(len(self.train_IOU_history))
+        plt.xticks(epoch_idxs[::5], epoch_idxs[::5])
+        plt.plot(epoch_idxs, self.train_IOU_history, "-b", label="training")
+        plt.plot(epoch_idxs, self.validation_IOU_history, "-r", label="validation")
+        plt.title("IOU history")
+        plt.legend()
+        plt.ylabel("IOU")
+        plt.xlabel("Epochs")

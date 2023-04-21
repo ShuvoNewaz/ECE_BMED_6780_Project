@@ -41,7 +41,10 @@ class Trainer:
         elif model_name == 'pspnet':
             self.model, self.optimizer = psp_model_optimizer(layers=50, num_classes=2)
         elif model_name == 'unet':
-            self.model = UNet(1, 2)
+            if seg_type == 'lung':
+                self.model = UNet(1, 2)
+            else:
+                self.model = UNet(1, 2)
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
         self.model_name = model_name
         self.model = self.model.to(device)
@@ -49,10 +52,10 @@ class Trainer:
         dataloader_args = {"num_workers": 1, "pin_memory": True} if torch.cuda.is_available() else {}
         dataloader_args = {}
 
-        self.train_dataset = ImageLoader(
+        self.train_dataset = ImageLoaderFile(
                                             im_file=train_im, msk_file=train_msk, transform=train_data_transforms
                                         )
-        self.val_dataset = ImageLoader(
+        self.val_dataset = ImageLoaderFile(
                                             im_file=validation_im, msk_file=validation_msk, transform=val_data_transforms
                                         )
 
@@ -66,8 +69,8 @@ class Trainer:
         # self.optimizer = optimizer
         self.train_loss_history = []
         self.validation_loss_history = []
-        self.train_accuracy_history = []
-        self.validation_accuracy_history = []
+        self.train_IOU_history = []
+        self.validation_IOU_history = []
 
         # load the model from the disk if it exists
         if os.path.exists(model_dir) and load_from_disk:
@@ -76,9 +79,6 @@ class Trainer:
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
         self.model.train()
-        self.original_images = [] # Store the original validation images
-        self.original_masks = [] # Store the ground truth of validation set
-        self.predictions = [] # Store the predicted images
 
     def save_model(self, dir) -> None:
         """
@@ -95,46 +95,46 @@ class Trainer:
     def run_training_loop(self, num_epochs: int) -> None:
         """Train for num_epochs, and validate after every epoch."""
         for epoch_idx in range(num_epochs):
-            train_loss = self.train_epoch()
+            save_im = epoch_idx == num_epochs-1 # Save images only from the last epoch
+            train_loss, train_IOU = self.train_epoch(save_im)
 
             self.train_loss_history.append(train_loss)
-            # self.train_accuracy_history.append(train_acc)
+            self.train_IOU_history.append(train_IOU)
 
-            val_loss = self.validate()
+            val_loss, val_IOU = self.validate(save_im)
             self.validation_loss_history.append(val_loss)
-            # self.validation_accuracy_history.append(val_acc)
+            self.validation_IOU_history.append(val_IOU)
 
             print(
                 f"Epoch:{epoch_idx + 1}"
                 + f" Train Loss:{train_loss:.4f}"
                 + f" Val Loss: {val_loss:.4f}"
-                # + f" Train Accuracy: {train_acc:.4f}"
-                # + f" Validation Accuracy: {val_acc:.4f}"
+                + f" Train IOU: {train_IOU:.4f}"
+                + f" Validation IOU: {val_IOU:.4f}"
             )
 
-    def train_epoch(self) -> Tuple[float, float]:
+    def train_epoch(self, save_im: bool=False) -> Tuple[float, float]:
         """Implements the main training loop."""
         self.model.train()
 
         train_loss_meter = AverageMeter()
-        train_acc_meter = AverageMeter()
+        train_IOU_meter = AverageMeter()
 
         # loop over each minibatch
-        for (x, masks) in self.train_loader:
+
+        for batch_number, (x, masks) in enumerate(self.train_loader):
             # print('Before x-mask to GPU', torch.cuda.memory_allocated(0))
+            # print(x.shape, masks.shape)
             x = x.to(device)
             masks = masks.to(device)
             masks[masks != 0] = 1 # Reduce to a binary classification problem
 
             n = x.shape[0]
-            
-            # batch_acc = IOU(logits, masks, 4, 255)
-            # train_acc_meter.update(val=batch_acc, n=n)
-            # print(batch_acc.shape)
-
             if self.model_name == 'esfpnet':
                 logits = self.model(x)
                 batch_loss = ange_structure_loss(logits, masks)
+                y_hat = torch.sigmoid(logits)
+                y_hat = (y_hat > 0.5) * 1
             elif self.model_name == 'pspnet':
                 logits, y_hat, aux_loss, main_loss = self.model(x, masks)
                 aux_weight = 0.4
@@ -142,10 +142,12 @@ class Trainer:
             elif self.model_name == 'unet':
                 masks = masks.long()
                 logits = self.model(x)
+                prob = nn.Softmax(dim=1)(logits)
                 batch_loss = self.model.criterion(logits, masks)
+                y_hat = torch.argmax(logits, dim=1)
 
             train_loss_meter.update(val=float(batch_loss.cpu().item()), n=n)
-
+            
             self.optimizer.zero_grad()
             batch_loss.backward()
             self.optimizer.step()
@@ -155,37 +157,50 @@ class Trainer:
             x = x.detach().cpu()
             masks = masks.detach().cpu()
             logits = logits.detach().cpu()
+            y_hat = y_hat.detach().cpu()
+            iou = IOU(y_hat, masks) # Calculate IOUs
+            train_IOU_meter.update(val=float(iou), n=n)
             if self.model_name == 'pspnet':
-                y_hat = y_hat.detach().cpu()
                 main_loss = main_loss.detach().cpu()
                 aux_loss = aux_loss.detach().cpu()
             batch_loss = batch_loss.detach().cpu()
             torch.cuda.empty_cache()
 
-        return train_loss_meter.avg#, train_acc_meter.avg
+            if save_im:
+                if batch_number == 0:
+                    self.original_images_train = x
+                    self.predictions_train = y_hat
+                    if self.model_name == 'unet':
+                        prob = prob.detach().cpu()
+                        self.probability_train = prob
+                    if self.seg_type != 'lung':
+                        self.original_masks_train = masks
+                else:
+                    self.original_images_train = torch.concat((self.original_images_train, x))
+                    self.predictions_train = torch.concat((self.predictions_train, y_hat))
+                    if self.model_name == 'unet':
+                        prob = prob.detach().cpu()
+                        self.probability_train = np.concatenate((self.probability_train, prob))
+                    if self.seg_type != 'lung':
+                        self.original_masks_train = torch.concat((self.original_masks_train, masks))
 
-    def validate(self) -> Tuple[float, float]:
+        return train_loss_meter.avg, train_IOU_meter.avg
+
+    def validate(self, save_im: bool=False) -> Tuple[float, float]:
         """Evaluate on held-out split (either val or test)"""
         self.model.eval()
 
         val_loss_meter = AverageMeter()
-        val_acc_meter = AverageMeter()
+        val_IOU_meter = AverageMeter()
 
-        self.original_images = []
-        self.original_masks = []
-        self.predictions = []
-        self.prob = []
         # loop over whole val set
-        for (x, masks) in self.val_loader:
+
+        for batch_number, (x, masks) in enumerate(self.val_loader):
             x = x.to(device)
             masks = masks.to(device)
             masks[masks != 0] = 1 # Reduce to a binary classification problem
 
             n = x.shape[0]
-
-            # batch_acc = IOU(logits, masks, 4, 255)
-            # val_acc_meter.update(val=batch_acc, n=n)
-
             if self.model_name == 'esfpnet':
                 logits = self.model(x)
                 batch_loss = ange_structure_loss(logits, masks)
@@ -210,27 +225,39 @@ class Trainer:
             masks = masks.detach().cpu()
             logits = logits.detach().cpu()
             y_hat = y_hat.detach().cpu()
+            iou = IOU(y_hat, masks) # Calculate IOUS
+            val_IOU_meter.update(val=float(iou), n=n)
             if self.model_name == 'pspnet':
                 main_loss = main_loss.detach().cpu()
                 aux_loss = aux_loss.detach().cpu()
-            elif self.model_name == 'unet':
-                prob = prob.detach().cpu()
-                self.prob.append(prob)
+            
             batch_loss = batch_loss.detach().cpu()
             torch.cuda.empty_cache()
 
             # Store images for viewing
 
-            self.original_images.append(x)
-            if self.seg_type != 'lung':
-                self.original_masks.append(masks)
-            self.predictions.append(y_hat)
+            if save_im:
+                if batch_number == 0:
+                    self.original_images_val = x
+                    self.predictions_val = y_hat
+                    if self.model_name == 'unet':
+                        prob = prob.detach().cpu()
+                        self.probability_val = prob
+                    if self.seg_type != 'lung':
+                        self.original_masks_val = masks
+                else:
+                    self.original_images_val = torch.concat((self.original_images_val, x))
+                    self.predictions_val = torch.concat((self.predictions_val, y_hat))
+                    if self.model_name == 'unet':
+                        prob = prob.detach().cpu()
+                        self.probability_val = np.concatenate((self.probability_val, prob))
+                    if self.seg_type != 'lung':
+                        self.original_masks_val = torch.concat((self.original_masks_val, masks))
 
-        return val_loss_meter.avg#, val_acc_meter.avg
+        return val_loss_meter.avg, val_IOU_meter.avg
 
     def plot_loss_history(self) -> None:
         """Plots the loss history"""
-        plt.figure()
         epoch_idxs = range(len(self.train_loss_history))
         plt.xticks(epoch_idxs[::5], epoch_idxs[::5])
         plt.plot(epoch_idxs, self.train_loss_history, "-b", label="training")
@@ -239,20 +266,18 @@ class Trainer:
         plt.legend()
         plt.ylabel("Loss")
         plt.xlabel("Epochs")
-        plt.show()
 
-    def plot_accuracy(self) -> None:
-        """Plots the accuracy history"""
-        plt.figure()
-        epoch_idxs = range(len(self.train_loss_history))
+    def plot_IOU_history(self) -> None:
+        """Plots the IOU history"""
+        epoch_idxs = range(len(self.train_IOU_history))
         plt.xticks(epoch_idxs[::5], epoch_idxs[::5])
-        plt.plot(epoch_idxs, self.train_accuracy_history, "-b", label="training")
-        plt.plot(epoch_idxs, self.validation_accuracy_history, "-r", label="validation")
-        plt.title("Accuracy history")
+        plt.plot(epoch_idxs, self.train_IOU_history, "-b", label="training")
+        plt.plot(epoch_idxs, self.validation_IOU_history, "-r", label="validation")
+        plt.title("IOU history")
         plt.legend()
-        plt.ylabel("Accuracy")
+        plt.ylabel("IOU")
         plt.xlabel("Epochs")
-        plt.show()
+        
 
 # class MultiLabelTrainer:
 #     """Class that stores model training metadata."""

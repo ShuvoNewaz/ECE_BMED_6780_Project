@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from src import mit
 from src import mlp
 from mmcv.cnn import ConvModule
+from src.metrics import ange_structure_loss
 
 
 pretrain_path = './Pretrained'
@@ -52,6 +53,7 @@ class ESFPNetStructure(nn.Module):
         # Optimizer
         # backbone_params = {'params': }
         # self.optimizer = torch.optim.AdamW(ESFP)
+        self.criterion = ange_structure_loss
         
     def _init_weights(self):
         
