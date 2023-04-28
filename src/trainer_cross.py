@@ -9,7 +9,7 @@ from src.avg_meter import AverageMeter, SegmentationAverageMeter
 from src.crossval import crossvalidation
 # from src.esfpnet import ESFPNetStructure
 from src.pspnet import *
-from src.unet_model import UNet#Dummy as UNet
+from src.unet_model import UNetDummy as UNet
 from typing import List, Tuple
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, random_split
@@ -52,7 +52,7 @@ class Trainer:
         elif model_name == 'pspnet':
             self.model, self.optimizer = psp_model_optimizer(layers=50, num_classes=2)
         elif model_name == 'unet':
-            pretrained_unet = torch.load('./saved_model/unet_carvana_scale0.5_epoch2.pth')
+            # pretrained_unet = torch.load('./saved_model/unet_carvana_scale0.5_epoch2.pth')
             self.lung_segmenter = UNet(n_channels=1, n_classes=2)
             self.optimizer_1 = torch.optim.AdamW(self.lung_segmenter.parameters(), lr=1e-4)
 
@@ -60,10 +60,10 @@ class Trainer:
             self.optimizer_2 = []
             for t in range(T):
                 self.infection_segmenter1.append(UNet(n_channels=1, n_classes=2))
-                self.optimizer_2.append(torch.optim.AdamW(self.infection_segmenter1[t].parameters(), lr=1e-4))
+                self.optimizer_2.append(torch.optim.AdamW(self.infection_segmenter1[t].parameters(), lr=1e-6))
             
             self.infection_segmenter2 = UNet(n_channels=3, n_classes=num_classes)
-            self.infection_segmenter2.load_state_dict(pretrained_unet)
+            # self.infection_segmenter2.load_state_dict(pretrained_unet)
             self.optimizer_3 = torch.optim.AdamW(self.infection_segmenter2.parameters(), lr=1e-4)
                 
         self.model_name = model_name
@@ -88,7 +88,7 @@ class Trainer:
                                         self.train_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
                                         )
         self.val_loader_full = DataLoader(
-                                        self.val_dataset, batch_size=batch_size, shuffle=False, **dataloader_args
+                                        self.val_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
                                     )
         
         self.num_train_images = len(self.train_dataset)
@@ -348,6 +348,7 @@ class Trainer:
 
     def crossval_epoch(self, num_epochs: int, load_from_disk: bool):
         best_f1 = 0
+        best_IOU = 0
         for fold_number, (train_loader, val_loader) in enumerate(zip(self.train_loader_list, self.val_loader_list)): 
             # Choose whether to load model and optimizer from disk
             if load_from_disk:
@@ -367,7 +368,7 @@ class Trainer:
                 self.optimizer_2 = []
                 for t in range(self.T):
                     self.infection_segmenter1.append(UNet(n_channels=1, n_classes=2))
-                    self.optimizer_2.append(torch.optim.AdamW(self.infection_segmenter1[t].parameters(), lr=1e-4))
+                    self.optimizer_2.append(torch.optim.AdamW(self.infection_segmenter1[t].parameters(), lr=1e-6))
                 
                 self.infection_segmenter2 = UNet(n_channels=3, n_classes=self.num_classes)
                 self.optimizer_3 = torch.optim.AdamW(self.infection_segmenter2.parameters(), lr=1e-4)
@@ -389,9 +390,11 @@ class Trainer:
 
                 if val_f1 > best_f1:
                     best_f1 = val_f1
+                    best_IOU = val_IOU
                     for t in range(self.T):
                         save_model(self.infection_segmenter1[t], self.optimizer_2[t], f'./saved_model/stage2_{t+1}.pt')
                     save_model(self.infection_segmenter2, self.optimizer_3, './saved_model/stage3.pt')
+        return best_f1, best_IOU
 
     def train_stage2_3(self, save_im: bool) -> Tuple[float, float]:
         # Set training mode

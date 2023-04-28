@@ -1,7 +1,7 @@
 from torchvision import transforms
 
 
-def get_train_transforms() -> transforms.Compose:
+def get_train_transforms_common() -> transforms.Compose:
     value_scale = 255
     mean = [0.485, 0.456, 0.406]
     mean = [item * value_scale for item in mean]
@@ -16,6 +16,17 @@ def get_train_transforms() -> transforms.Compose:
                                             # transforms.GaussianBlur([5, 1]),
                                             # transforms.RandomCrop(480), # Comment
                                             # transforms.Normalize(mean=mean, std=std)
+                                        ])
+
+    return data_transforms
+
+
+def get_train_transforms_image() -> transforms.Compose:
+    data_transforms = transforms.Compose([
+                                            transforms.ToTensor(),
+                                            transforms.GaussianBlur([5, 1]),
+                                            # transforms.ColorJitter(brightness=(0.2, 1), contrast=(0.2), saturation=0.1, hue=(-0.1, 0.1)),
+                                            # transforms.RandomAdjustSharpness(0.2)
                                         ])
 
     return data_transforms

@@ -88,7 +88,7 @@ class Trainer:
                                         self.train_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
                                         )
         self.val_loader = DataLoader(
-                                        self.val_dataset, batch_size=batch_size, shuffle=False, **dataloader_args
+                                        self.val_dataset, batch_size=batch_size, shuffle=True, **dataloader_args
                                     )
         
         self.num_train_images = len(self.train_loader.dataset)

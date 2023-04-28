@@ -85,9 +85,9 @@ def dice_loss_coff(pred, target, smooth = 0.0001):
 def sample_variance(y: List[np.ndarray]):
     """
         Args:
-            y: Probability of classes of all test images in all neural nets (T, no. of test images, C, H, W)
+            y: Probability of classes of all test images in all neural nets (T, no. of images, C, H, W)
         Returns:
-            var: Sample Variance (no. of test images, H, W)
+            var: Sample Variance (no. of images, H, W)
     """
     T = len(y)
     N, C, H, W = y[0].shape
@@ -109,15 +109,15 @@ def predictive_entropy(y: List[np.ndarray]):
     """
         Args:
             C: Number of classes
-            y: Probability of classes of all test images in all neural nets (T, no. of test images, C, H, W)
+            y: Probability of classes of all test images in all neural nets (T, no. of images, C, H, W)
         Returns:
-            H: Predictive Entropy (no. of test images, H, W)
+            H: Predictive Entropy (no. ofimages, H, W)
     """
     T = len(y)
     N, C, H, W = y[0].shape
     H = 0
     for c in range(C):
-        term = 0
+        term = 1e-9
         for t in range(T):
             term = term + y[t][:, c, :, :]
         term = 1/T * term
