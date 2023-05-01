@@ -9,7 +9,7 @@ from src.avg_meter import AverageMeter, SegmentationAverageMeter
 from src.crossval import crossvalidation
 from src.esfpnet import ESFPNetStructure
 from src.pspnet import *
-from src.unet_model import UNetDummy as UNet
+from src.unet_model import UNet#Dummy as UNet
 from typing import List, Tuple
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, random_split
@@ -46,6 +46,7 @@ class Trainer:
         self.model_dir = model_dir
         self.T = T
         self.num_classes = num_classes
+        self.k_fold = k_fold
         if model_name == 'esfpnet':
             self.B = B
             self.lung_segmenter = ESFPNetStructure(self.B, 160, 0.2)
@@ -73,6 +74,17 @@ class Trainer:
             self.infection_segmenter2 = UNet(n_channels=3, n_classes=num_classes)
             # self.infection_segmenter2.load_state_dict(pretrained_unet)
             self.optimizer_3 = torch.optim.AdamW(self.infection_segmenter2.parameters(), lr=1e-4)
+        elif model_name == 'pspnet':
+            self.lung_segmenter, self.optimizer_1 = psp_model_optimizer(layers=50) # Use default parameters
+
+            self.infection_segmenter1 = []
+            self.optimizer_2 = []
+            for t in range(T):
+                infection_segmenter1, optimizer_2 = psp_model_optimizer(layers=50)
+                self.infection_segmenter1.append(infection_segmenter1)
+                self.optimizer_2.append(optimizer_2)
+            
+            self.infection_segmenter2, self.optimizer_3 = psp_model_optimizer(layers=50)
                 
         self.model_name = model_name
         self.best_f1 = -100
@@ -99,22 +111,28 @@ class Trainer:
                                         )
         
         # Set up cross-validation splits
-        
+        self.num_train_images = len(self.train_dataset)
+        self.num_val_images = len(self.val_dataset)
+
         self.train_loader_list, self.val_loader_list = crossvalidation(self.train_dataset, k=k_fold, batch_size=batch_size)
 
+        # Drop last batch if last batch size is 1 to keep batcnorm from breaking.
+
+        drop_last_train = self.num_train_images % batch_size == 1
+        drop_last_val = self.num_val_images % batch_size == 1
+        
         self.train_loader_full = DataLoader(
                                         self.train_dataset,
                                         batch_size=batch_size,
-                                        shuffle=True, **dataloader_args
+                                        shuffle=True, **dataloader_args,
+                                        drop_last=drop_last_train
                                         )
         self.val_loader_full = DataLoader(
                                         self.val_dataset,
                                         batch_size=batch_size,
-                                        shuffle=True, **dataloader_args
+                                        shuffle=True, **dataloader_args,
+                                        drop_last=drop_last_val
                                     )
-        
-        self.num_train_images = len(self.train_dataset)
-        self.num_val_images = len(self.val_dataset)
 
         self.train_loss_history_stage1 = []
         self.validation_loss_history_stage1 = []
@@ -256,17 +274,22 @@ class Trainer:
 
             lung_mask = lung_mask.long()
             self.lung_segmenter = self.lung_segmenter.to(device)
-            lung_logits = self.lung_segmenter(image)
-            stage1_loss = self.lung_segmenter.criterion(lung_logits, lung_mask)
-            self.optimizer_1.zero_grad()
-            stage1_loss.backward()
-            self.optimizer_1.step()
+            
+            if self.model_name != 'pspnet':
+                lung_logits = self.lung_segmenter(image)
+                stage1_loss = self.lung_segmenter.criterion(lung_logits, lung_mask)
             if self.model_name == 'esfpnet':
                 y_hat = torch.sigmoid(lung_logits)
                 y_hat = (y_hat > 0.5) * 1
             elif self.model_name == 'unet':
                 y_hat = torch.argmax(lung_logits, dim=1)
+            elif self.model_name == 'pspnet':
+                lung_logits, y_hat, main_loss, aux_loss = self.lung_segmenter(image, lung_mask)
+                stage1_loss = main_loss + 0.4 * aux_loss
             f1_score = BinaryF1(y_hat, lung_mask)
+            self.optimizer_1.zero_grad()
+            stage1_loss.backward()
+            self.optimizer_1.step()
 
             # Clear from GPU
 
@@ -277,19 +300,15 @@ class Trainer:
             stage1_loss = stage1_loss.detach().cpu()
             y_hat = y_hat.detach().cpu()
             f1_score = f1_score.detach().cpu()
-
-            # print('After stage 1 to CPU', torch.cuda.memory_allocated(0))
+            if self.model_name == 'pspnet':
+                main_loss = main_loss.detach().cpu()
+                aux_loss = aux_loss.detach().cpu()
 
             train_loss_meter.update(val=float(stage1_loss.item()), n=n)
 
             iou = IOU(y_hat, lung_mask) # Calculate IOUs
             train_IOU_meter.update(val=float(iou), n=n)
             train_f1_meter.update(val=float(f1_score), n=n)
-
-            if self.model_name == 'pspnet':
-                main_loss = main_loss.detach().cpu()
-                aux_loss = aux_loss.detach().cpu()
-            stage1_loss = stage1_loss.detach().cpu()
 
             # Empty GPU memory
 
@@ -332,16 +351,20 @@ class Trainer:
 
             lung_mask = lung_mask.long()
             self.lung_segmenter = self.lung_segmenter.to(device)
-            lung_logits = self.lung_segmenter(image)
-            stage1_loss = self.lung_segmenter.criterion(lung_logits, lung_mask)
-            
+
+            if self.model_name != 'pspnet':
+                lung_logits = self.lung_segmenter(image)
+                stage1_loss = self.lung_segmenter.criterion(lung_logits, lung_mask)
             if self.model_name == 'esfpnet':
                 y_hat = torch.sigmoid(lung_logits)
                 y_hat = (y_hat > 0.5) * 1
             elif self.model_name == 'unet':
                 y_hat = torch.argmax(lung_logits, dim=1)
+            elif self.model_name == 'pspnet':
+                lung_logits, y_hat, main_loss, aux_loss = self.lung_segmenter(image, lung_mask)
+                stage1_loss = main_loss + 0.4 * aux_loss
             f1_score = BinaryF1(y_hat, lung_mask)
-
+            
             # Clear from GPU
 
             self.lung_segmenter = self.lung_segmenter.cpu()
@@ -351,6 +374,9 @@ class Trainer:
             stage1_loss = stage1_loss.detach().cpu()
             y_hat = y_hat.detach().cpu()
             f1_score = f1_score.detach().cpu()
+            if self.model_name == 'pspnet':
+                main_loss = main_loss.detach().cpu()
+                aux_loss = aux_loss.detach().cpu()
 
             # print('After stage 1 to CPU', torch.cuda.memory_allocated(0))
 
@@ -424,6 +450,8 @@ class Trainer:
                     for t in range(self.T):
                         save_model(self.infection_segmenter1[t], self.optimizer_2[t], f'./saved_model/stage2_{t+1}.pt')
                     save_model(self.infection_segmenter2, self.optimizer_3, './saved_model/stage3.pt')
+            print(f'Fold {fold_number+1}/{self.k_fold} completed!')
+        
         return best_f1, best_IOU
 
     def train_stage2_3(self, save_im: bool) -> Tuple[float, float]:
@@ -454,16 +482,19 @@ class Trainer:
 
             for t in range(self.T):
                 self.infection_segmenter1[t] = self.infection_segmenter1[t].to(device)
-                inf_logits1 = self.infection_segmenter1[t](image)
-                stage2_loss = self.infection_segmenter1[t].criterion(inf_logits1, inf_mask)
-
-                if self.model_name == 'esfpnet': # Same as U-Net for now
+                if self.model_name != 'pspnet':
+                    inf_logits1 = self.infection_segmenter1[t](image)
+                    stage2_loss = self.infection_segmenter1[t].criterion(inf_logits1, inf_mask)
+                if self.model_name == 'esfpnet':
                     y_hat_inf_1 = torch.sigmoid(inf_logits1)
                     prob = torch.concat((torch.unsqueeze(y_hat_inf_1, dim=1), 1-torch.unsqueeze(y_hat_inf_1, dim=1)), dim=1)
                     y_hat_inf_1 = (y_hat_inf_1 > 0.5) * 1
-                # prob = torch.concat((torch.unsqueeze(inf_logits1, dim=1), 1-torch.unsqueeze(inf_logits1, dim=1)), dim=1)
                 elif self.model_name == 'unet':
                     y_hat_inf_1 = torch.argmax(inf_logits1, dim=1)
+                    prob = nn.Softmax(dim=1)(inf_logits1)
+                elif self.model_name == 'pspnet':
+                    inf_logits1, y_hat_inf_1, main_loss, aux_loss = self.infection_segmenter1[t](image, inf_mask)
+                    stage2_loss = main_loss + 0.4 * aux_loss
                     prob = nn.Softmax(dim=1)(inf_logits1)
 
                 self.optimizer_2[t].zero_grad()
@@ -495,17 +526,18 @@ class Trainer:
             # Stage 3
 
             self.infection_segmenter2 = self.infection_segmenter2.to(device)
-            inf_logits2 = self.infection_segmenter2(torch.concat((image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            # inf_logits2 = self.infection_segmenter2(torch.concat((T_preds, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            # inf_logits2 = self.infection_segmenter2(torch.concat((T_probabilities, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            # inf_logits2 = self.infection_segmenter2(torch.concat((image, torch.unsqueeze(y_hat_inf_1, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            # inf_logits2 = self.infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            stage3_loss = self.infection_segmenter2.criterion(inf_logits2, inf_mask)
+            if self.model_name != 'pspnet':
+                inf_logits2 = self.infection_segmenter2(torch.concat((image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
+                stage3_loss = self.infection_segmenter2.criterion(inf_logits2, inf_mask)
             if self.model_name == 'esfpnet':
                 y_hat = torch.sigmoid(inf_logits2)
                 y_hat = (y_hat > 0.5) * 1
             elif self.model_name == 'unet':
                 y_hat = torch.argmax(inf_logits2, dim=1)
+            elif self.model_name == 'pspnet':
+                inf_logits2, y_hat, main_loss, aux_loss = self.infection_segmenter2(torch.concat((image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1), inf_mask)
+                stage3_loss = main_loss + 0.4 * aux_loss
+
             f1_score = BinaryF1(y_hat, inf_mask)
 
             self.optimizer_3.zero_grad()
@@ -523,8 +555,6 @@ class Trainer:
             train_f1_meter.update(val=float(f1_score.item()), n=n)
 
             batch_loss = stage2_loss_total + stage3_loss
-
-
             train_loss_meter.update(val=float(batch_loss.item()), n=n)
             
             # Empty GPU memory
@@ -538,6 +568,9 @@ class Trainer:
 
             iou = IOU(y_hat, inf_mask) # Calculate IOUs
             train_IOU_meter.update(val=float(iou), n=n)
+            if self.model_name == 'pspnet':
+                main_loss = main_loss.detach().cpu()
+                aux_loss = aux_loss.detach().cpu()
             batch_loss = batch_loss.detach().cpu()
             torch.cuda.empty_cache()
 
@@ -581,15 +614,19 @@ class Trainer:
 
             for t in range(self.T):
                 self.infection_segmenter1[t] = self.infection_segmenter1[t].to(device)
-                inf_logits1 = self.infection_segmenter1[t](image)
-                stage2_loss = self.infection_segmenter1[t].criterion(inf_logits1, inf_mask)
+                if self.model_name != 'pspnet':
+                    inf_logits1 = self.infection_segmenter1[t](image)
+                    stage2_loss = self.infection_segmenter1[t].criterion(inf_logits1, inf_mask)
                 if self.model_name == 'esfpnet':
                     y_hat_inf_1 = torch.sigmoid(inf_logits1)
                     prob = torch.concat((torch.unsqueeze(y_hat_inf_1, dim=1), 1-torch.unsqueeze(y_hat_inf_1, dim=1)), dim=1)
                     y_hat_inf_1 = (y_hat_inf_1 > 0.5) * 1
-                # prob = torch.concat((torch.unsqueeze(inf_logits1, dim=1), 1-torch.unsqueeze(inf_logits1, dim=1)), dim=1)
                 elif self.model_name == 'unet':
                     y_hat_inf_1 = torch.argmax(inf_logits1, dim=1)
+                    prob = nn.Softmax(dim=1)(inf_logits1)
+                elif self.model_name == 'pspnet':
+                    inf_logits1, y_hat_inf_1, main_loss, aux_loss = self.infection_segmenter1[t](image, inf_mask)
+                    stage2_loss = main_loss + 0.4 * aux_loss
                     prob = nn.Softmax(dim=1)(inf_logits1)
 
                 if t == 0:
@@ -617,17 +654,18 @@ class Trainer:
             # Stage 3
 
             self.infection_segmenter2 = self.infection_segmenter2.to(device)
-            inf_logits2 = self.infection_segmenter2(torch.concat((image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            # inf_logits2 = self.infection_segmenter2(torch.concat((T_preds, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            # inf_logits2 = self.infection_segmenter2(torch.concat((T_probabilities, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            # inf_logits2 = self.infection_segmenter2(torch.concat((image, torch.unsqueeze(y_hat_inf_1, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            # inf_logits2 = self.infection_segmenter2(torch.concat((image, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-            stage3_loss = self.infection_segmenter2.criterion(inf_logits2, inf_mask)
+            if self.model_name != 'pspnet':
+                inf_logits2 = self.infection_segmenter2(torch.concat((image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
+                stage3_loss = self.infection_segmenter2.criterion(inf_logits2, inf_mask)
             if self.model_name == 'esfpnet':
                 y_hat = torch.sigmoid(inf_logits2)
                 y_hat = (y_hat > 0.5) * 1
             elif self.model_name == 'unet':
                 y_hat = torch.argmax(inf_logits2, dim=1)
+            elif self.model_name == 'pspnet':
+                inf_logits2, y_hat, main_loss, aux_loss = self.infection_segmenter2(torch.concat((image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1), inf_mask)
+                stage3_loss = main_loss + 0.4 * aux_loss
+
             f1_score = BinaryF1(y_hat, inf_mask)
 
             # Clear from GPU
@@ -655,6 +693,9 @@ class Trainer:
 
             iou = IOU(y_hat, inf_mask) # Calculate IOUs
             val_IOU_meter.update(val=float(iou), n=n)
+            if self.model_name == 'pspnet':
+                main_loss = main_loss.detach().cpu()
+                aux_loss = aux_loss.detach().cpu()
             batch_loss = batch_loss.detach().cpu()
             torch.cuda.empty_cache()
 

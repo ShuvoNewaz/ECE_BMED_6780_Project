@@ -36,7 +36,7 @@ class PSPNet(nn.Module):
             resnet = models.resnet101(pretrained=pretrained)
         else:
             resnet = models.resnet152(pretrained=pretrained)
-        print('HERE')
+
         self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.conv2, resnet.bn2, resnet.relu, resnet.conv3, resnet.bn3, resnet.relu, resnet.maxpool)
         self.layer1, self.layer2, self.layer3, self.layer4 = resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4
 
@@ -102,18 +102,19 @@ class PSPNet(nn.Module):
         x = self.layer2(x)
         x_tmp = self.layer3(x)
         x = self.layer4(x_tmp)
+
         if self.use_ppm:
             x = self.ppm(x)
 
-        logits = self.cls(x)
-        aux_logits = self.aux(x_tmp)
+        x = self.cls(x)
+        aux = self.aux(x_tmp)
 
         if self.zoom_factor != 1:
             x = F.interpolate(x, size=(h, w), mode='bilinear', align_corners=True)      
-            aux_logits = F.interpolate(aux_logits, size=(h, w), mode='bilinear', align_corners=True)
-        main_loss = self.criterion(logits, y)
-        aux_loss = self.criterion(aux_logits, y)
-        yhat = torch.argmax(logits, dim=1)
+            aux = F.interpolate(aux, size=(h, w), mode='bilinear', align_corners=True)
+        main_loss = self.criterion(x, y)
+        aux_loss = self.criterion(aux, y)
+        yhat = torch.argmax(x, dim=1)
         
         return x, yhat, main_loss, aux_loss
 
