@@ -88,15 +88,16 @@ class PSPNet(nn.Module):
         # w = int((x_size[3] - 1) / 8 * self.zoom_factor + 1)
         # x_size = x.size()
         # assert (x_size[2]-1) % 8 == 0 and (x_size[3]-1) % 8 == 0
-        y = y.long()
+        if y is not None:
+            y = y.long()
         x = x.float()
+        main_loss, aux_loss = 0, 0
         B, C, H, W = x.shape
         h = (H) // 8 * self.zoom_factor
         w = (W) // 8 * self.zoom_factor
         if C == 1:
             x = torch.tile(x, (1, 3, 1, 1))
         
-
         x = self.layer0(x)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -112,8 +113,9 @@ class PSPNet(nn.Module):
         if self.zoom_factor != 1:
             x = F.interpolate(x, size=(h, w), mode='bilinear', align_corners=True)      
             aux = F.interpolate(aux, size=(h, w), mode='bilinear', align_corners=True)
-        main_loss = self.criterion(x, y)
-        aux_loss = self.criterion(aux, y)
+        if y is not None:
+            main_loss = self.criterion(x, y)
+            aux_loss = self.criterion(aux, y)
         yhat = torch.argmax(x, dim=1)
         
         return x, yhat, main_loss, aux_loss

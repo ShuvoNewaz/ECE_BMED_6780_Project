@@ -26,7 +26,6 @@ class Trainer:
     def __init__(
                     self,
                     model_name: str,
-                    model_dir: str,
                     train_data_transforms_common: transforms.Compose,
                     train_data_transforms_image: transforms.Compose,
                     val_data_transforms: transforms.Compose,
@@ -43,7 +42,9 @@ class Trainer:
                     B='B0'
                 ) -> None:
         self.device = device
-        self.model_dir = model_dir
+        self.model_dir = os.path.join('./saved_model', model_name)
+        self.model_dir = self.model_dir + f'_T{T}_K{k_fold}'
+        os.makedirs(self.model_dir, exist_ok=True)
         self.T = T
         self.num_classes = num_classes
         self.k_fold = k_fold
@@ -165,7 +166,7 @@ class Trainer:
 
     def run_training_loop_stage1(self, num_epochs: int, load_from_disk: bool) -> None:
         if load_from_disk:
-            checkpoint = torch.load('./saved_model/stage1.pt')
+            checkpoint = torch.load(self.model_dir+'/stage1.pt')
             self.lung_segmenter.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer_1.load_state_dict(checkpoint['optimizer_state_dict'])
             optimizer_to(self.optimizer_1, device)
@@ -186,7 +187,7 @@ class Trainer:
 
             if val_f1 > best_f1:
                 best_f1 = val_f1
-                save_model(self.lung_segmenter, self.optimizer_1, './saved_model/stage1.pt')
+                save_model(self.lung_segmenter, self.optimizer_1, self.model_dir+'/stage1.pt')
 
             print(
                 f"Epoch:{epoch_idx + 1}"
@@ -203,24 +204,24 @@ class Trainer:
         if load_from_disk:
             for t in range(self.T):
                 # Stage 2
-                checkpoint = torch.load(f'./saved_model/stage2_{t+1}_final.pt')
+                checkpoint = torch.load(self.model_dir+f'/stage2_{t+1}_final.pt')
                 self.infection_segmenter1[t].load_state_dict(checkpoint['model_state_dict'])
                 self.optimizer_2[t].load_state_dict(checkpoint['optimizer_state_dict'])
                 optimizer_to(self.optimizer_2[t], device)
             # Stage 3
-            checkpoint = torch.load('./saved_model/stage3_final.pt')
+            checkpoint = torch.load(self.model_dir+'/stage3_final.pt')
             self.infection_segmenter2.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer_3.load_state_dict(checkpoint['optimizer_state_dict'])
             optimizer_to(self.optimizer_3, device)
         else: # load the best cross-validation parameters
             for t in range(self.T):
                 # Stage 2
-                checkpoint = torch.load(f'./saved_model/stage2_{t+1}.pt')
+                checkpoint = torch.load(self.model_dir+f'/stage2_{t+1}.pt')
                 self.infection_segmenter1[t].load_state_dict(checkpoint['model_state_dict'])
                 self.optimizer_2[t].load_state_dict(checkpoint['optimizer_state_dict'])
                 optimizer_to(self.optimizer_2[t], device)
             # Stage 3
-            checkpoint = torch.load('./saved_model/stage3.pt')
+            checkpoint = torch.load(self.model_dir+'/stage3.pt')
             self.infection_segmenter2.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer_3.load_state_dict(checkpoint['optimizer_state_dict'])
             optimizer_to(self.optimizer_3, device)
@@ -251,8 +252,8 @@ class Trainer:
                 self.best_IOU = val_IOU
 
                 for t in range(self.T):
-                    save_model(self.infection_segmenter1[t], self.optimizer_2[t], f'./saved_model/stage2_{t+1}_final.pt')
-                save_model(self.infection_segmenter2, self.optimizer_3, './saved_model/stage3_final.pt')
+                    save_model(self.infection_segmenter1[t], self.optimizer_2[t], self.model_dir+f'/stage2_{t+1}_final.pt')
+                save_model(self.infection_segmenter2, self.optimizer_3, self.model_dir+'/stage3_final.pt')
 
     def train_stage1(self, save_im: bool) -> Tuple[float, float]:
         # Set training mode
@@ -378,8 +379,6 @@ class Trainer:
                 main_loss = main_loss.detach().cpu()
                 aux_loss = aux_loss.detach().cpu()
 
-            # print('After stage 1 to CPU', torch.cuda.memory_allocated(0))
-
             val_loss_meter.update(val=float(stage1_loss.item()), n=n)
 
             iou = IOU(y_hat, lung_mask) # Calculate IOUs
@@ -414,17 +413,18 @@ class Trainer:
     def crossval_epoch(self, num_epochs: int, load_from_disk: bool):
         best_f1 = -100
         best_IOU = -100
+        print(f'Starting {self.k_fold}-fold cross-validation...\n')
         for fold_number, (train_loader, val_loader) in enumerate(zip(self.train_loader_list, self.val_loader_list)): 
             # Choose whether to load model and optimizer from disk
             if load_from_disk:
                 for t in range(self.T):
                     # Stage 2
-                    checkpoint = torch.load(f'./saved_model/stage2_{t+1}_final.pt')
+                    checkpoint = torch.load(self.model_dir+f'/stage2_{t+1}_final.pt')
                     self.infection_segmenter1[t].load_state_dict(checkpoint['model_state_dict'])
                     self.optimizer_2[t].load_state_dict(checkpoint['optimizer_state_dict'])
                     optimizer_to(self.optimizer_2[t], device)
                 # Stage 3
-                checkpoint = torch.load('./saved_model/stage3_final.pt')
+                checkpoint = torch.load(self.model_dir+'/stage3_final.pt')
                 self.infection_segmenter2.load_state_dict(checkpoint['model_state_dict'])
                 self.optimizer_3.load_state_dict(checkpoint['optimizer_state_dict'])
                 optimizer_to(self.optimizer_3, device)
@@ -448,8 +448,8 @@ class Trainer:
                     best_f1 = val_f1
                     best_IOU = val_IOU
                     for t in range(self.T):
-                        save_model(self.infection_segmenter1[t], self.optimizer_2[t], f'./saved_model/stage2_{t+1}.pt')
-                    save_model(self.infection_segmenter2, self.optimizer_3, './saved_model/stage3.pt')
+                        save_model(self.infection_segmenter1[t], self.optimizer_2[t], self.model_dir+f'/stage2_{t+1}.pt')
+                    save_model(self.infection_segmenter2, self.optimizer_3, self.model_dir+'/stage3.pt')
             print(f'Fold {fold_number+1}/{self.k_fold} completed!')
         
         return best_f1, best_IOU
@@ -726,54 +726,86 @@ class Trainer:
         assert image.ndim == 4
         if load_model_from_disk:
             # Stage 1
-            checkpoint = torch.load('./saved_model/stage1.pt')
+            checkpoint = torch.load(self.model_dir+'/stage1.pt')
             self.lung_segmenter.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer_1.load_state_dict(checkpoint['optimizer_state_dict'])
             for t in range(self.T):
                 # Stage 2
-                checkpoint = torch.load(f'./saved_model/stage2_{t+1}_final.pt')
+                checkpoint = torch.load(self.model_dir+f'/stage2_{t+1}_final.pt')
                 self.infection_segmenter1[t].load_state_dict(checkpoint['model_state_dict'])
                 self.optimizer_2[t].load_state_dict(checkpoint['optimizer_state_dict'])
             # Stage 3
-            checkpoint = torch.load('./saved_model/stage3_final.pt')
+            checkpoint = torch.load(self.model_dir+'/stage3_final.pt')
             self.infection_segmenter2.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer_3.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        image = image.to(device)
+        n = image.shape[0]
+
+        # Stage 1
+
         self.lung_segmenter = self.lung_segmenter.to(device)
-        lung_logits = self.lung_segmenter(image)
+
+        if self.model_name != 'pspnet':
+            lung_logits = self.lung_segmenter(image)
         if self.model_name == 'esfpnet':
             lung_mask = torch.sigmoid(lung_logits)
             lung_mask = (lung_mask > 0.5) * 1
         elif self.model_name == 'unet':
             lung_mask = torch.argmax(lung_logits, dim=1)
-        
-        # Create the lung regions for validation set
+        elif self.model_name == 'pspnet':
+            lung_logits, lung_mask, main_loss, aux_loss = self.lung_segmenter(image)
 
-        lung_image = torch.zeros(image.shape).double().to(device)
+        # Create the lung regions
+
+        lung_image = torch.zeros(image.shape).float().to(device)
         lung_index = lung_mask[0] != 0
         background_index = lung_mask[0] == 0
         lung_image[0, 0][lung_index] = image[0, 0][lung_index]
         lung_image[0, 0][background_index] = torch.min(image[0, 0])
 
-        T_probabilities = torch.zeros(self.T, 1, self.num_classes, image.shape[2], image.shape[3])
+        # Clear from GPU
+
+        self.lung_segmenter = self.lung_segmenter.cpu()
+        lung_logits = lung_logits.detach().cpu()
+        lung_mask = lung_mask.detach().cpu()
+        lung_image = lung_image.detach().cpu()
+
+        # Stage 2
+
+        T_probabilities = torch.zeros(self.T, n, self.num_classes, image.shape[2], image.shape[3])
         # T_preds = torch.zeros(n, self.T, image.shape[2], image.shape[3])
+        stage2_loss_total = 0
+
         for t in range(self.T):
             self.infection_segmenter1[t] = self.infection_segmenter1[t].to(device)
-            # print(f'Before {t}', torch.cuda.memory_allocated(0))
-            inf_logits1 = self.infection_segmenter1[t](lung_image)
-            # print(f'After {t}', torch.cuda.memory_allocated(0))
-            prob = nn.Softmax(dim=1)(inf_logits1)
-            y_hat_inf_1 = torch.argmax(inf_logits1, dim=1)
+            if self.model_name != 'pspnet':
+                inf_logits1 = self.infection_segmenter1[t](image)
+            if self.model_name == 'esfpnet':
+                y_hat_inf_1 = torch.sigmoid(inf_logits1)
+                prob = torch.concat((torch.unsqueeze(y_hat_inf_1, dim=1), 1-torch.unsqueeze(y_hat_inf_1, dim=1)), dim=1)
+                y_hat_inf_1 = (y_hat_inf_1 > 0.5) * 1
+            elif self.model_name == 'unet':
+                y_hat_inf_1 = torch.argmax(inf_logits1, dim=1)
+                prob = nn.Softmax(dim=1)(inf_logits1)
+            elif self.model_name == 'pspnet':
+                inf_logits1, y_hat_inf_1, main_loss, aux_loss = self.infection_segmenter1[t](image)
+                prob = nn.Softmax(dim=1)(inf_logits1)
+
+            if t == 0:
+                T_preds = torch.unsqueeze(y_hat_inf_1, dim=1)
+            else:
+                T_preds = torch.concat((T_preds, torch.unsqueeze(y_hat_inf_1, dim=1)), dim=1)
             
             # Clear from GPU
 
             prob = prob.detach().cpu()
             self.infection_segmenter1[t] = self.infection_segmenter1[t].cpu()
             inf_logits1 = inf_logits1.detach().cpu()
-            y_hat_inf_1 = y_hat_inf_1.detach().cpu()
             T_probabilities[t] = prob # Store T probabilities for each image in the batch
-            # T_preds[:, t] = y_hat_inf_1
 
-        # T_preds = T_preds.detach()
+        T_preds = T_preds.detach()
+        T_preds = torch.mean(T_preds.float(), dim=1, keepdim=True)
         T_probabilities = T_probabilities.detach()
         sam_var = sample_variance(T_probabilities)
         pred_ent = predictive_entropy(T_probabilities)
@@ -783,17 +815,30 @@ class Trainer:
         # Stage 3
 
         self.infection_segmenter2 = self.infection_segmenter2.to(device)
-        # inf_logits2 = self.infection_segmenter2(torch.concat((T_preds, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-        # inf_logits2 = self.infection_segmenter2(torch.concat((T_probabilities, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-        inf_logits2 = self.infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-        y_hat = torch.argmax(inf_logits2, dim=1)
+        if self.model_name != 'pspnet':
+            inf_logits2 = self.infection_segmenter2(torch.concat((image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
+        if self.model_name == 'esfpnet':
+            y_hat = torch.sigmoid(inf_logits2)
+            y_hat = (y_hat > 0.5) * 1
+        elif self.model_name == 'unet':
+            y_hat = torch.argmax(inf_logits2, dim=1)
+        elif self.model_name == 'pspnet':
+            inf_logits2, y_hat, main_loss, aux_loss = self.infection_segmenter2(torch.concat((image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
 
         # Clear from GPU
 
         self.infection_segmenter2 = self.infection_segmenter2.cpu()
         inf_logits2 = inf_logits2.detach().cpu()
-        stage3_loss = stage3_loss.detach().cpu()
-        f1_score = f1_score.detach().cpu()
-        lung_image = lung_image.detach().cpu()
+        image = image.detach().cpu()
 
-        return y_hat
+        # Empty GPU memory
+
+        y_hat_inf_1 = y_hat_inf_1.detach().cpu()
+        y_hat = y_hat.detach().cpu()
+        T_preds = T_preds.cpu()
+        T_probabilities = T_probabilities.cpu()
+        sam_var = sam_var.detach().cpu()
+        pred_ent = pred_ent.detach().cpu()
+        torch.cuda.empty_cache()
+
+        return lung_mask, lung_image, y_hat
