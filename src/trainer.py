@@ -43,31 +43,36 @@ class Trainer:
                     batch_size: int=100,
                     load_from_disk: bool = True,
                     model_args: dict = dict(),
+                    lr: float = 1e-4,
                     logger = None,
-                    predict=False
+                    predict=False,
+                    cfg=dict()
                 ) -> None:
         self.logger = logger or get_logger()
         self.device = device
         self.model_dir = model_dir
         if model_name == 'esfpnet':
             self.model = ESFPNetStructure(**model_args)
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         elif model_name == 'pspnet':
             self.model, self.optimizer = psp_model_optimizer(layers=50, num_classes=2)
         elif model_name == 'unet':
             self.model = UNet(**model_args)
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         elif model_name == 'ensemble':
             self.model = EnsembleNet(**model_args)
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         elif model_name == 'single_Conv':
             self.model = single_Conv(**model_args)
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         else: raise NotImplementedError
         self.model_name = model_name
         self.model = self.model.to(device)
         self.seg_type = seg_type
         dataloader_args = {"num_workers": 1, "pin_memory": True} if torch.cuda.is_available() else {}
+
+        logger.info(self.model)
+        logger.info(f"Number of parameters: {sum(p.numel() for p in self.model.parameters())}")
 
         if seg_type != 'ensemble':
             if predict:
@@ -93,16 +98,16 @@ class Trainer:
         else:
             if predict:
                 self.test_dataset = EnsembleLoader(
-                    exp=test_im, msk_file=test_msk, transform=val_data_transforms)
+                    exp=test_im, msk_file=test_msk, transform=val_data_transforms, logit_file=cfg.data.test.logit_file)
                 self.test_loader = DataLoader(
                                                 self.test_dataset, batch_size=1, shuffle=False, **dataloader_args
                                             )
             else:
                 self.train_dataset = EnsembleLoader(
-                                                    exp=train_im, msk_file=train_msk, transform=train_data_transforms
+                                                    exp=train_im, msk_file=train_msk, transform=train_data_transforms, logit_file=cfg.data.train.logit_file
                                                 )
                 self.val_dataset = EnsembleLoader(
-                                                    exp=validation_im, msk_file=validation_msk, transform=val_data_transforms
+                                                    exp=validation_im, msk_file=validation_msk, transform=val_data_transforms, logit_file=cfg.data.val.logit_file
                                                 )
 
                 self.train_loader = DataLoader(
@@ -283,8 +288,7 @@ class Trainer:
             for x, masks in self.test_loader:
                 x = x.to(device)
                 n = x.shape[0]
-
-                if self.model_name in ['esfpnet', 'unet', 'ensemble']:
+                if self.model_name in ['esfpnet', 'unet', 'ensemble', 'single_Conv']:
                     logits = self.model(x)
                     prob = torch.sigmoid(logits)
                 elif self.model_name == 'pspnet':
@@ -302,9 +306,10 @@ class Trainer:
                 x = x.squeeze(1).detach().cpu().numpy()
 
                 # Store images for viewing
-
-                original_images.append(x)
-        original_images = np.concatenate(original_images, axis=0)
+                if self.model_name != 'single_Conv':
+                    original_images.append(x)
+        if self.model_name != 'single_Conv':
+            original_images = np.concatenate(original_images, axis=0)
         logits = torch.cat(all_logits, dim=0)
         masks = torch.cat(all_masks, dim=0)
         if self.test_dataset.msk_file:
@@ -339,6 +344,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default='config/esfpnet.py', type=str)
     parser.add_argument("--predict", action="store_true")
+    parser.add_argument("--predict_logits", type=str, default="logits.npy")
     parser.add_argument("--draw_outputs", action="store_true")
     parser.add_argument('--options', nargs='+', action=DictAction, help='custom options')
     args = parser.parse_args()
@@ -369,13 +375,14 @@ if __name__ == "__main__":
                  load_from_disk=cfg.load_from_disk,
                  model_args=cfg.model.args,
                  logger = logger,
-                 predict=args.predict)
+                 lr=cfg.lr,
+                 predict=args.predict, cfg=cfg)
     if args.predict:
         original_images, logits = runner.predict()
         predictions = (logits > 0).astype(np.int32)
-        N = original_images.shape[0]
         
         if args.draw_outputs:
+            N = original_images.shape[0]
             fig = plt.figure(figsize=(16, 4))
             for idx in range(N):
                 ax = plt.subplot(2, N, idx+1)
@@ -386,8 +393,8 @@ if __name__ == "__main__":
                 plt.axis('off')
             fig.savefig(os.path.join(cfg.exp, "predictions.png"))
 
-        # with open(os.path.join(cfg.exp, "logits.npy"), 'wb') as f:
-            # np.save(f, logits)
+        with open(os.path.join(cfg.exp, args.predict_logits), 'wb') as f:
+            np.save(f, logits)
 
     else:
         runner.run_training_loop(num_epochs=cfg.num_epochs)

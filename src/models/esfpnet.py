@@ -11,7 +11,7 @@ pretrain_path = './Pretrained'
 
 class ESFPNetStructure(nn.Module):
 
-    def __init__(self, model_type: str, embedding_dim: int, dropout=0):
+    def __init__(self, model_type: str, embedding_dim: int, dropout=0, load_pretrained=True):
         super().__init__()
         self.model_type = model_type
         # Backbone
@@ -28,7 +28,8 @@ class ESFPNetStructure(nn.Module):
         if self.model_type == 'B5':
             self.backbone = mit.mit_b5()
         
-        self._init_weights()  # load pretrain
+        if load_pretrained:
+            self._init_weights()  # load pretrain
         
         # LP Header
         self.LP_1 = mlp.LP(input_dim = self.backbone.embed_dims[0], embed_dim = self.backbone.embed_dims[0])
@@ -74,7 +75,7 @@ class ESFPNetStructure(nn.Module):
         model_dict = self.backbone.state_dict()
         pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
         model_dict.update(pretrained_dict)
-        self.backbone.load_state_dict(model_dict)
+        self.backbone.load_state_dict(model_dict, strict=False)
         print("successfully loaded!")
         
         

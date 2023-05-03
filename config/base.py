@@ -3,6 +3,7 @@ batch_size=8
 seg_type='infection'
 load_from_disk=False
 num_epochs=25
+lr=1e-4
 
 model=dict(model_name='pspnet', args=dict())
 

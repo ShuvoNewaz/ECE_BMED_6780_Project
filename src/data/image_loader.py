@@ -54,7 +54,8 @@ class ImageLoader(data.Dataset):
         return image, mask
 
 class EnsembleLoader(data.Dataset):
-    def __init__(self, exp: str, msk_file: str, transform: Compose=None) -> None:
+    def __init__(self, exp: str, msk_file: str, logit_file="logits.npy", 
+                    transform: Compose=None) -> None:
         """
         args:
             root_dir: Root working directory
@@ -69,38 +70,37 @@ class EnsembleLoader(data.Dataset):
         self.exp = exp
         self.msk_file = msk_file
         self.transform = transform
+        self.logit_file = logit_file
         self.load_images_with_masks()
     def load_npy(self, fileName):
-        with open(fileName, 'rb') as f:
-            result = np.load(fileName)
-        return np.expand_dims(result, axis=0)
+        # with open(fileName, 'rb') as f:
+        result = np.load(fileName, mmap_mode='r')
+        return np.expand_dims(result, axis=-1)
     def load_images_with_masks(self) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
         Returns the list of tuples containing the image and the mask
         of the dataset.
         """
-        # images = nib.load(self.im_file).get_fdata()
-        logit_npys = [os.path.join(self.exp, i, "logits.npy") for i in sorted(os.listdir(self.exp))]
+        logit_npys = [os.path.join(self.exp, i, self.logit_file) for i in sorted(os.listdir(self.exp))]
         logit_npys = [i for i in logit_npys if os.path.isfile(i)]
-        with mp.Pool() as p:
-            logits = np.concatenate(p.map(self.load_npy, logit_npys))
+        logits = [self.load_npy(i) for i in logit_npys]
         if not self.msk_file:
             masks = np.zeros(images.shape) # Placeholder for missing validation masks
         else:
             masks = nib.load(self.msk_file).get_fdata()
-        # for i in range(logits.shape[1]):
-        #     dataset.append((logits[:, i, ...], masks[:, :, i]))
 
-        self.logits = logits.swapaxes(0, 1).swapaxes(1, 2).swapaxes(2, 3)
+        self.logits = logits # [(N, H, W, 1)]
         self.masks = masks
 
     def __len__(self):
-        return self.logits.shape[1]
+        return self.logits[0].shape[0]
         # return len(self.dataset)
 
     def __getitem__(self, index):
         # image, mask = self.dataset[index]
-        image, mask = self.logits[index, ...], self.masks[:, :, index]
+        mask = self.masks[:, :, index]
+        image = np.concatenate([i[index] for i in self.logits], axis=-1)
+        image = image
         if self.transform:
             image = self.transform(image)
 
