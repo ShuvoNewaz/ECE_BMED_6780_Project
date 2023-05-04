@@ -9,13 +9,15 @@ from src.avg_meter import *
 from torch import nn
 import matplotlib.pyplot as plt
 from typing import List
+from scipy import signal
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def TrainCross(train_loader, model_name, infection_segmenter1: List[nn.Module],
-               infection_segmenter2: List[nn.Module], optimizer_2, optimizer_3, T, num_classes):
+               infection_segmenter2: List[nn.Module], optimizer_2, optimizer_3, T, num_classes,
+               sin_Conv, sin_Conv_Optimizer):
     
     for t in range(T):
         infection_segmenter1[t].train()
@@ -73,6 +75,8 @@ def TrainCross(train_loader, model_name, infection_segmenter1: List[nn.Module],
             stage2_loss_total = stage2_loss_total + stage2_loss
             T_probabilities[t] = prob # Store T probabilities for each image in the batch
 
+        # sin_Conv = sin_Conv.to(device)
+
         T_probabilities = T_probabilities.detach()
         T_preds = T_preds.detach()
         T_preds = torch.mean(T_preds.float(), dim=1, keepdim=True)
@@ -81,14 +85,24 @@ def TrainCross(train_loader, model_name, infection_segmenter1: List[nn.Module],
         sam_var = sam_var.to(device)
         pred_ent = pred_ent.to(device)
 
+        # T_preds = sin_Conv(T_preds)
+        # T_preds = sin_Conv(torch.concat((lung_image, T_preds), dim=1))
+        # conv_loss = sin_Conv.criterion(T_preds, inf_mask.float())
+        # sin_Conv_Optimizer.zero_grad()
+        # conv_loss.backward()
+        # sin_Conv_Optimizer.step()
+        # T_preds = T_preds.detach()
+        # conv_loss = conv_loss.detach().cpu()
+        # sin_Conv = sin_Conv.cpu()
+        # T_preds = torch.unsqueeze(T_preds, dim=1)
+
         # Stage 3
 
         infection_segmenter2 = infection_segmenter2.to(device)
-        # inf_logits2 = infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(y_hat_inf_1, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-        # inf_logits2 = infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
         
         if model_name != 'pspnet':
             inf_logits2 = infection_segmenter2(torch.concat((lung_image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
+            # inf_logits2 = infection_segmenter2(T_preds)
             stage3_loss = infection_segmenter2.criterion(inf_logits2, inf_mask)
         if model_name == 'esfpnet':
             y_hat = torch.sigmoid(inf_logits2)
@@ -97,6 +111,7 @@ def TrainCross(train_loader, model_name, infection_segmenter1: List[nn.Module],
             y_hat = torch.argmax(inf_logits2, dim=1)
         elif model_name == 'pspnet':
             inf_logits2, y_hat, main_loss, aux_loss = infection_segmenter2(torch.concat((lung_image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1), inf_mask)
+            # inf_logits2, y_hat, main_loss, aux_loss = infection_segmenter2(T_preds, inf_mask)
             stage3_loss = main_loss + 0.4 * aux_loss
 
         f1_score = BinaryF1(y_hat, inf_mask)
@@ -114,7 +129,7 @@ def TrainCross(train_loader, model_name, infection_segmenter1: List[nn.Module],
         lung_image = lung_image.detach().cpu()
         train_f1_meter.update(val=float(f1_score.item()), n=n)
 
-        batch_loss = stage2_loss_total + stage3_loss
+        batch_loss = stage2_loss_total + stage3_loss# + conv_loss
         train_loss_meter.update(val=float(batch_loss.item()), n=n)
         
         # Empty GPU memory
@@ -138,7 +153,7 @@ def TrainCross(train_loader, model_name, infection_segmenter1: List[nn.Module],
 
 
 def ValidateCross(val_loader, model_name, infection_segmenter1, infection_segmenter2,
-                        T, num_classes):
+                        T, num_classes, sin_Conv):
     """
         Implements the validation pass in cross-validation. Unlike external validation
         set, this set has ground truth lung masks because it extracted from the training set.
@@ -164,54 +179,6 @@ def ValidateCross(val_loader, model_name, infection_segmenter1, infection_segmen
         inf_mask = inf_mask.long()            
         T_probabilities = torch.zeros(T, n, num_classes, image.shape[2], image.shape[3])
         stage2_loss_total = 0
-    
-        # for t in range(T):
-        #     infection_segmenter1[t] = infection_segmenter1[t].to(device)
-        #     inf_logits1 = infection_segmenter1[t](lung_image)
-        #     stage2_loss = infection_segmenter1[t].criterion(inf_logits1, inf_mask)
-        #     if model_name == 'esfpnet': # Same as U-Net for now
-        #         y_hat_inf_1 = torch.sigmoid(inf_logits1)
-        #         prob = torch.concat((torch.unsqueeze(y_hat_inf_1, dim=1), 1-torch.unsqueeze(y_hat_inf_1, dim=1)), dim=1)
-        #         y_hat_inf_1 = (y_hat_inf_1 > 0.5) * 1
-        #         # prob = torch.concat((torch.unsqueeze(inf_logits1, dim=1), 1-torch.unsqueeze(inf_logits1, dim=1)), dim=1)
-        #     elif model_name == 'unet':
-        #         y_hat_inf_1 = torch.argmax(inf_logits1, dim=1)
-        #         prob = nn.Softmax(dim=1)(inf_logits1)
-
-        #     if t == 0:
-        #         T_preds = torch.unsqueeze(y_hat_inf_1, dim=1)
-        #     else:
-        #         T_preds = torch.concat((T_preds, torch.unsqueeze(y_hat_inf_1, dim=1)), dim=1)
-            
-        #     # Clear from GPU
-
-        #     prob = prob.detach().cpu()
-        #     infection_segmenter1[t] = infection_segmenter1[t].cpu()
-        #     inf_logits1 = inf_logits1.detach().cpu()
-        #     y_hat_inf_1 = y_hat_inf_1.detach().cpu()
-        #     stage2_loss = stage2_loss.detach().cpu()
-        #     stage2_loss_total = stage2_loss_total + stage2_loss
-        #     T_probabilities[t] = prob # Store T probabilities for each image in the batch
-
-        # T_preds = T_preds.detach()
-        # T_preds = torch.mean(T_preds.float(), dim=1, keepdim=True)
-        # T_probabilities = T_probabilities.detach()
-        # sam_var = sample_variance(T_probabilities)
-        # pred_ent = predictive_entropy(T_probabilities)
-        # sam_var = sam_var.to(device)
-        # pred_ent = pred_ent.to(device)
-        
-        # # Stage 3
-
-        # infection_segmenter2 = infection_segmenter2.to(device)
-        # inf_logits2 = infection_segmenter2(torch.concat((lung_image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
-        # # inf_logits2 = infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-        # stage3_loss = infection_segmenter2.criterion(inf_logits2, inf_mask)
-        # if model_name == 'esfpnet':
-        #     y_hat = torch.sigmoid(inf_logits2)
-        #     y_hat = (y_hat > 0.5) * 1
-        # elif model_name == 'unet':
-        #     y_hat = torch.argmax(inf_logits2, dim=1)
 
         for t in range(T):
             infection_segmenter1[t] = infection_segmenter1[t].to(device)
@@ -246,6 +213,8 @@ def ValidateCross(val_loader, model_name, infection_segmenter1, infection_segmen
             stage2_loss_total = stage2_loss_total + stage2_loss
             T_probabilities[t] = prob # Store T probabilities for each image in the batch
 
+        # sin_Conv = sin_Conv.to(device)
+
         T_probabilities = T_probabilities.detach()
         T_preds = T_preds.detach()
         T_preds = torch.mean(T_preds.float(), dim=1, keepdim=True)
@@ -254,14 +223,19 @@ def ValidateCross(val_loader, model_name, infection_segmenter1, infection_segmen
         sam_var = sam_var.to(device)
         pred_ent = pred_ent.to(device)
 
+        # T_preds = sin_Conv(T_preds)
+        # T_preds = sin_Conv(torch.concat((lung_image, T_preds), dim=1))
+        # conv_loss = sin_Conv.criterion(T_preds, inf_mask.float())
+        # conv_loss = conv_loss.detach().cpu()
+        # sin_Conv = sin_Conv.cpu()
+        # T_preds = torch.unsqueeze(T_preds, dim=1)
+
         # Stage 3
 
         infection_segmenter2 = infection_segmenter2.to(device)
-        # inf_logits2 = infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(y_hat_inf_1, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-        # inf_logits2 = infection_segmenter2(torch.concat((lung_image, torch.unsqueeze(sam_var, dim=1), torch.unsqueeze(pred_ent, dim=1)), dim=1))
-        
         if model_name != 'pspnet':
             inf_logits2 = infection_segmenter2(torch.concat((lung_image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1))
+            # inf_logits2 = infection_segmenter2(T_preds)
             stage3_loss = infection_segmenter2.criterion(inf_logits2, inf_mask)
         if model_name == 'esfpnet':
             y_hat = torch.sigmoid(inf_logits2)
@@ -270,6 +244,7 @@ def ValidateCross(val_loader, model_name, infection_segmenter1, infection_segmen
             y_hat = torch.argmax(inf_logits2, dim=1)
         elif model_name == 'pspnet':
             inf_logits2, y_hat, main_loss, aux_loss = infection_segmenter2(torch.concat((lung_image, T_preds, torch.unsqueeze(pred_ent, dim=1)), dim=1), inf_mask)
+            # inf_logits2, y_hat, main_loss, aux_loss = infection_segmenter2(T_preds, inf_mask)
             stage3_loss = main_loss + 0.4 * aux_loss
 
         f1_score = BinaryF1(y_hat, inf_mask)
@@ -282,7 +257,7 @@ def ValidateCross(val_loader, model_name, infection_segmenter1, infection_segmen
         f1_score = f1_score.detach().cpu()
         lung_image = lung_image.detach().cpu()
 
-        batch_loss = stage2_loss_total + stage3_loss
+        batch_loss = stage2_loss_total + stage3_loss# + conv_loss
 
         val_loss_meter.update(val=float(batch_loss.item()), n=n)
         val_f1_meter.update(val=float(f1_score.item()), n=n)
@@ -348,3 +323,26 @@ def plot_history(plot_description: str, plot_list_train: List, plot_list_val: Li
     plt.legend()
     plt.ylabel(plot_description.split(' ')[0])
     plt.xlabel("Epochs")
+
+
+class single_Conv(torch.nn.Module):
+    def __init__(self, in_channels, kernel_size, std=1):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels=in_channels, out_channels=1,
+                            kernel_size=kernel_size, padding=(kernel_size-1)//2, bias=False)
+        self.criterion = torch.nn.BCEWithLogitsLoss()
+        kern = gkern(kernel_size, std=std) / in_channels
+        kern = torch.FloatTensor(kern).repeat(1, in_channels, 1, 1)
+        self.conv.weight = torch.nn.Parameter(kern)
+
+    def forward(self, x):
+        out = self.conv(x.float()).squeeze(1)
+
+        return out
+
+def gkern(kernel, std=1):
+    """Returns a 2D Gaussian kernel array."""
+    gkern1 = signal.gaussian(kernel, std=std).reshape(kernel, 1)
+    gkern2 = signal.gaussian(kernel, std=std).reshape(kernel, 1)
+    gkern2d = np.outer(gkern1, gkern2)
+    return gkern2d
