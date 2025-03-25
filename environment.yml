@@ -1,0 +1,26 @@
+name: medical_image_segmentation
+channels:
+  - defaults
+  - nvidia
+  - pytorch
+  - anaconda
+  - conda-forge
+dependencies:
+  - python==3.10.9
+  - pip==23.0.1
+  - numpy==1.24.2
+  - jupyter==1.0.0
+  - nibabel==5.0.1
+  - pillow==9.4.0
+  - opencv==4.6.0
+  - matplotlib==3.7.0
+  - cuda-toolkit==11.7
+  - pytorch==1.13.1
+  - pytorch-cuda==11.7
+  - pytorch-mutex==1.0=cuda
+  - torchvision==0.14.1
+  - torchio==0.18.90
+  - timm==0.6.12
+  - gdown==5.2.0
+  # conda activate medical_image_segmentation
+  # conda install mmcv-full
